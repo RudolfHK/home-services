@@ -1,0 +1,130 @@
+# docker-compose.yml — Home Drive stack
+# FileBrowser + CouchDB, accessed exclusively through Tailscale (no public ports).
+#
+# All containers that need to be reachable via the tailnet use
+#   network_mode: service:tailscale
+# This puts them in the same network namespace as the Tailscale container, so
+# Tailscale's serve proxy can reach them on localhost.
+
+version: "3.9"
+
+# ── Named volumes ────────────────────────────────────────────────────────────
+volumes:
+  tailscale-state:   # Tailscale persistent state (keys, certs)
+  couchdb-data:      # CouchDB data — stored on the external drive via bind mount
+
+# ── Services ─────────────────────────────────────────────────────────────────
+services:
+
+  # ── 1. Tailscale sidecar ─────────────────────────────────────────────────
+  # This is the single entry point into the stack from the tailnet.
+  # All other services share its network via `network_mode: service:tailscale`.
+  # `tailscale serve` (configured via serve.json) proxies HTTPS to each service.
+  tailscale:
+    image: tailscale/tailscale:latest   # ARM64-compatible official image
+    container_name: homedrive-tailscale
+    hostname: ${TS_HOSTNAME}
+    restart: unless-stopped
+
+    environment:
+      # Auth key from the Tailscale admin console
+      TS_AUTHKEY: ${TS_AUTHKEY}
+      # Hostname to register in the tailnet
+      TS_HOSTNAME: ${TS_HOSTNAME}
+      # Path to the serve config inside the container
+      TS_SERVE_CONFIG: /config/tailscale/serve.json
+      # Optional extra CLI flags (e.g. --advertise-tags=tag:server)
+      TS_EXTRA_ARGS: ${TS_EXTRA_ARGS:-}
+      # Store state in the named volume so the container survives restarts
+      TS_STATE_DIR: /var/lib/tailscale
+      TZ: ${TZ}
+
+    volumes:
+      # Persistent Tailscale state (auth tokens, HTTPS cert cache)
+      - tailscale-state:/var/lib/tailscale
+      # Serve config (read-only)
+      - ./config/tailscale:/config/tailscale:ro
+      # WireGuard TUN device — required for Tailscale to function
+      - /dev/net/tun:/dev/net/tun
+
+    cap_add:
+      - NET_ADMIN   # needed to manage the WireGuard interface
+      - NET_RAW     # needed for raw socket operations
+
+    healthcheck:
+      # Consider the container healthy once `tailscale status` returns OK
+      test: ["CMD", "tailscale", "status", "--json"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── 2. FileBrowser ───────────────────────────────────────────────────────
+  # Lightweight web file manager.  Runs on port 8080 inside the tailscale
+  # network namespace.  Access it via https://<hostname>.<tailnet>.ts.net/
+  filebrowser:
+    image: filebrowser/filebrowser:latest   # ARM64 multi-arch image
+    container_name: homedrive-filebrowser
+    restart: unless-stopped
+
+    # Share the tailscale container's network — no separate IP, no host ports
+    network_mode: service:tailscale
+    depends_on:
+      tailscale:
+        condition: service_healthy
+
+    environment:
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+
+    volumes:
+      # The directory FileBrowser will show to users
+      - ${DATA_PATH}/files:/srv
+      # Settings file (port, auth, branding …)
+      - ./config/filebrowser/settings.json:/config/settings.json:ro
+      # SQLite database (users, shares, audit log) — persisted on the SSD
+      - ${DATA_PATH}/filebrowser/filebrowser.db:/database/filebrowser.db
+
+    # FileBrowser reads /config/settings.json at startup
+    command: ["--config", "/config/settings.json"]
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── 3. CouchDB ───────────────────────────────────────────────────────────
+  # Obsidian Self-hosted LiveSync backend.
+  # Runs on port 5984 inside the tailscale network namespace.
+  # Access the Fauxton admin UI at https://<hostname>.<tailnet>.ts.net/couchdb/_utils/
+  couchdb:
+    image: couchdb:3          # ARM64 official image, pinned to major version 3
+    container_name: homedrive-couchdb
+    restart: unless-stopped
+
+    network_mode: service:tailscale
+    depends_on:
+      tailscale:
+        condition: service_healthy
+
+    environment:
+      # CouchDB admin credentials — referenced from .env
+      COUCHDB_USER: ${COUCHDB_USER}
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD}
+      TZ: ${TZ}
+
+    volumes:
+      # Custom CouchDB config (CORS, single-node, chunked sync settings)
+      - ./config/couchdb/local.ini:/opt/couchdb/etc/local.ini:ro
+      # Data stored on the external SSD for durability
+      - ${DATA_PATH}/couchdb:/opt/couchdb/data
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5984/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

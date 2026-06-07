@@ -1,0 +1,19 @@
+{
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "${TS_HOSTNAME}.${TS_TAILNET}:443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:8080"
+        },
+        "/couchdb/": {
+          "Proxy": "http://127.0.0.1:5984"
+        }
+      }
+    }
+  }
+}

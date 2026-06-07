@@ -1,0 +1,10 @@
+# Never commit secrets or local state
+.env
+
+# FileBrowser SQLite database (managed at runtime)
+config/filebrowser/filebrowser.db
+
+# Runtime / OS noise
+data/
+*.log
+.DS_Store
