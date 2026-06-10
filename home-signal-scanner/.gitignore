@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+baseline.json
+ubertooth_log.jsonl
+/tmp/carrier_signal.bin
+.env

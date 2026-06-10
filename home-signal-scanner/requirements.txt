@@ -1,0 +1,13 @@
+# RF Monitor & Emitter — Python dependencies
+# Install with: pip install -r requirements.txt --break-system-packages
+#
+# All packages have ARM64 (aarch64) wheels available on PyPI.
+# Python 3.11+ required.
+
+pyrtlsdr>=0.3.0        # RTL-SDR Python bindings
+numpy>=1.24            # FFT + signal math
+scipy>=1.10            # Signal processing helpers
+matplotlib>=3.7        # Spectrum plots (optional, used for offline analysis)
+rich>=13.0             # Terminal dashboard (terminal_ui.py)
+spidev>=3.6            # MCP3008 SPI ADC (adc_reader.py)
+Pillow>=9.0            # LCD framebuffer rendering (lcd_display.py)
