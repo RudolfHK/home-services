@@ -39,7 +39,7 @@ A Bluetooth and Wi-Fi RF monitoring, testing, and bench-level signal emitting sy
 | MCP3008 ADC + 3× potentiometers | Physical dials for gain/channel |
 | 50 Ω SMA dummy load | **Required** for all HackRF TX tests |
 
-Full hardware guide: [CLAUDE.md](CLAUDE.md)
+Full hardware guide: [docs/HARDWARE.md](docs/HARDWARE.md)
 
 ---
 
