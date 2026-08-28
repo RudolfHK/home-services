@@ -149,8 +149,6 @@ sudo mkdir -p \
   "${DATA_PATH}/tmp"
 
 # FileBrowser runs as PUID:PGID and needs to write into files/ and filebrowser/.
-# CouchDB's own entrypoint chowns its data dir to the couchdb user, so leave
-# ${DATA_PATH}/couchdb alone beyond making sure it exists.
 info "Setting ownership to ${PUID}:${PGID}…"
 sudo chown "${PUID}:${PGID}" \
   "${DATA_PATH}" \
@@ -160,6 +158,14 @@ sudo chown "${PUID}:${PGID}" \
   "${DATA_PATH}/tmp"
 # Backups contain a full copy of your notes — keep them owner-only.
 sudo chmod 700 "${DATA_PATH}/backups"
+
+# The official couchdb image runs the database as uid/gid 5984, and its
+# entrypoint is *supposed* to chown its own data directory on start. Doing it
+# explicitly costs nothing and removes the most common cause of a CouchDB
+# container that restarts forever: a bind-mounted data directory it cannot
+# write to. Do NOT use PUID/PGID here — 5984 is baked into the image.
+info "Setting CouchDB data ownership to 5984:5984…"
+sudo chown -R 5984:5984 "${DATA_PATH}/couchdb"
 
 # A previous version of this stack bind-mounted filebrowser.db as a FILE. If the
 # path does not exist, Docker creates a DIRECTORY there and FileBrowser cannot
@@ -253,13 +259,22 @@ if [[ "$TS_UP" == "true" ]]; then
       printf '%s\n' "$FILEBROWSER_ADMIN_PASSWORD" \
         | docker exec -i homedrive-filebrowser sh -c "$script" "$FILEBROWSER_ADMIN_USER"
     }
-    if fb_set_password update >/dev/null 2>&1; then
+    # Capture output rather than discarding it: swallowing stderr here turns a
+    # one-line CLI error ("unknown flag", "no such user") into an unexplained
+    # warning, and this step is the difference between a private file server and
+    # one with a default password on it.
+    FB_ERR_UPDATE=""; FB_ERR_ADD=""
+    if FB_ERR_UPDATE="$(fb_set_password update 2>&1)"; then
       info "FileBrowser admin password updated for user '$FILEBROWSER_ADMIN_USER'."
-    elif fb_set_password add >/dev/null 2>&1; then
+    elif FB_ERR_ADD="$(fb_set_password add 2>&1)"; then
       info "FileBrowser admin user '$FILEBROWSER_ADMIN_USER' created."
     else
       warn "Could not set the FileBrowser admin password automatically."
-      warn "Do it manually before using the drive:"
+      warn "  'users update' said: ${FB_ERR_UPDATE:-<no output>}"
+      warn "  'users add' said:    ${FB_ERR_ADD:-<no output>}"
+      warn "List the accounts the container actually has with:"
+      warn "  docker exec -it homedrive-filebrowser /filebrowser -d /database/filebrowser.db users ls"
+      warn "Then do it manually before using the drive:"
       warn "  docker exec -it homedrive-filebrowser /filebrowser -d /database/filebrowser.db users update $FILEBROWSER_ADMIN_USER --password '<password>'"
     fi
   else
