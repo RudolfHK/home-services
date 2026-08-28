@@ -392,6 +392,27 @@ docker exec homedrive-tailscale cat /config/tailscale/serve.json
 
 The `serve status` output must show your real MagicDNS name, not a literal `${...}`.
 
+### Image pull fails: `tls: bad record MAC`
+
+A TLS record failed its integrity check, meaning bytes were corrupted between the registry
+and the Pi. It is not a Docker or registry problem. On a Pi 5 the usual causes are, in order:
+
+1. **NIC offload bugs** — payloads mangled after checksums are computed, so Ethernet CRC and
+   TCP checksums never catch it. Test with
+   `sudo ethtool -K eth0 tso off gso off gro off tx off rx off`, and persist with
+   `sudo nmcli connection modify "Wired connection 1" ethtool.feature-tso off ethtool.feature-gso off ethtool.feature-gro off ethtool.feature-tx off ethtool.feature-rx off`.
+2. **Under-voltage** — `vcgencmd get_throttled` must print `0x0`. A Pi 5 with a bus-powered
+   SSD needs a real 5 V / 5 A supply.
+3. **USB 3 interference with 2.4 GHz Wi-Fi** — only if you are on `wlan0`.
+
+`install.sh` retries the pull three times, and if the registry is still unreachable but every
+image is already on disk it continues with what it has rather than aborting. To skip the pull
+entirely:
+
+```bash
+bash scripts/install.sh --skip-pull
+```
+
 ### Stack refuses to start: "bind source path does not exist"
 
 Working as intended. The bind mounts use `create_host_path: false`, so if the external

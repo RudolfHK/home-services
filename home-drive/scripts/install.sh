@@ -14,10 +14,14 @@ ENV_FILE="$PROJECT_DIR/.env"
 COMPOSE=(docker compose -f "$PROJECT_DIR/docker-compose.yml" --env-file "$ENV_FILE")
 
 ASSUME_YES="${HOMEDRIVE_ASSUME_YES:-false}"
+SKIP_PULL="${HOMEDRIVE_SKIP_PULL:-false}"
 for arg in "$@"; do
   case "$arg" in
-    -y|--yes) ASSUME_YES=true ;;
-    *) echo "Unknown argument: $arg" >&2; exit 2 ;;
+    -y|--yes)    ASSUME_YES=true ;;
+    --skip-pull) SKIP_PULL=true ;;
+    *) echo "Unknown argument: $arg" >&2
+       echo "Usage: $0 [--yes] [--skip-pull]" >&2
+       exit 2 ;;
   esac
 done
 
@@ -220,8 +224,47 @@ info "Validating docker-compose.yml…"
 "${COMPOSE[@]}" config --quiet || error "docker-compose.yml did not validate against .env."
 
 # ── 7. Pull images ────────────────────────────────────────────────────────────
-info "Pulling images (may take a few minutes on first run)…"
-"${COMPOSE[@]}" pull
+# This is the one step that depends on the outside world. A flaky link must not
+# block a deploy when the images are already sitting on disk, so: retry a few
+# times, then fall back to whatever is local rather than aborting.
+images_present() {
+  local img
+  for img in "tailscale/tailscale:${TAILSCALE_TAG:-latest}" \
+             "filebrowser/filebrowser:${FILEBROWSER_TAG:-latest}" \
+             "couchdb:${COUCHDB_TAG:-3}"; do
+    docker image inspect "$img" >/dev/null 2>&1 || return 1
+  done
+  return 0
+}
+
+if [[ "$SKIP_PULL" == "true" ]]; then
+  info "Skipping the image pull (--skip-pull)."
+  images_present \
+    || error "Not every image is present locally. Re-run without --skip-pull once the network is healthy."
+else
+  info "Pulling images (may take a few minutes on first run)…"
+  PULL_OK=false
+  for attempt in 1 2 3; do
+    if "${COMPOSE[@]}" pull; then
+      PULL_OK=true
+      break
+    fi
+    warn "Pull attempt ${attempt}/3 failed."
+    if [[ "$attempt" -lt 3 ]]; then
+      sleep $(( attempt * 10 ))
+    fi
+  done
+
+  if [[ "$PULL_OK" != "true" ]]; then
+    if images_present; then
+      warn "Could not reach the registry, but every image is already present locally."
+      warn "Continuing with the images on disk. They will NOT be updated this run."
+      warn "Re-run install.sh once the network is healthy to pick up new versions."
+    else
+      error "Image pull failed and not every image is available locally. Fix the network first."
+    fi
+  fi
+fi
 
 # ── 8. Bring up the stack ─────────────────────────────────────────────────────
 info "Starting services…"
