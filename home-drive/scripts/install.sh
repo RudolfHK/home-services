@@ -232,10 +232,16 @@ else
   warn "Common causes: expired/single-use TS_AUTHKEY, or device approval pending."
 fi
 
-# ── 10. Reset the FileBrowser admin account ──────────────────────────────────
+# ── 10. Reset the FileBrowser admin account ──────────────────────────
 # FileBrowser seeds its own admin user on first start with a default password.
 # Leaving that in place on a file server reachable by everyone on the tailnet is
 # not acceptable, so force the credentials from .env on every install run.
+#
+# This CANNOT be done with `docker exec` into the running container: FileBrowser
+# holds an exclusive lock on its bbolt database for as long as it is running, and
+# the CLI just reports "Error: timeout". The service has to be stopped, the CLI
+# run from a throwaway container against the same volume, and the service
+# started again.
 if [[ "$TS_UP" == "true" ]]; then
   info "Applying FileBrowser admin credentials from .env…"
 
@@ -246,23 +252,39 @@ if [[ "$TS_UP" == "true" ]]; then
   done
 
   if [[ -f "${DATA_PATH}/filebrowser/filebrowser.db" ]]; then
-    # The password is fed over stdin rather than passed to `docker exec` so it
+    info "Stopping filebrowser to release its database lock…"
+    "${COMPOSE[@]}" stop filebrowser >/dev/null 2>&1 || true
+
+    # The password is fed over stdin rather than passed as an argument so it
     # does not appear in the host's process list or shell history.
+    #
+    # The binary has moved between image generations: older tags ship it at
+    # /filebrowser, current ones at /bin/filebrowser with `tini -- /init.sh` as
+    # the entrypoint. Resolve it via PATH and fall back, rather than hardcoding
+    # a path that breaks on the next image rebuild.
+    #
     # Note the two CLI shapes: `users add` takes the password positionally,
     # `users update` takes it as a --password flag.
     fb_set_password() {
       local verb="$1" script
+      local resolve='FB=$(command -v filebrowser || echo /filebrowser);'
       case "$verb" in
-        update) script='read -r pw; exec /filebrowser -d /database/filebrowser.db users update "$0" --password "$pw" --perm.admin' ;;
-        add)    script='read -r pw; exec /filebrowser -d /database/filebrowser.db users add "$0" "$pw" --perm.admin' ;;
+        update) script="read -r pw; $resolve"' exec "$FB" -d /database/filebrowser.db users update "$0" --password "$pw" --perm.admin' ;;
+        add)    script="read -r pw; $resolve"' exec "$FB" -d /database/filebrowser.db users add "$0" "$pw" --perm.admin' ;;
       esac
       printf '%s\n' "$FILEBROWSER_ADMIN_PASSWORD" \
-        | docker exec -i homedrive-filebrowser sh -c "$script" "$FILEBROWSER_ADMIN_USER"
+        | docker run --rm -i \
+            --user "${PUID}:${PGID}" \
+            -v "${DATA_PATH}/filebrowser:/database" \
+            --entrypoint sh \
+            "filebrowser/filebrowser:${FILEBROWSER_TAG:-latest}" \
+            -c "$script" "$FILEBROWSER_ADMIN_USER"
     }
+
     # Capture output rather than discarding it: swallowing stderr here turns a
-    # one-line CLI error ("unknown flag", "no such user") into an unexplained
+    # one-line CLI error ("unknown flag", "Error: timeout") into an unexplained
     # warning, and this step is the difference between a private file server and
-    # one with a default password on it.
+    # one carrying a default password.
     FB_ERR_UPDATE=""; FB_ERR_ADD=""
     if FB_ERR_UPDATE="$(fb_set_password update 2>&1)"; then
       info "FileBrowser admin password updated for user '$FILEBROWSER_ADMIN_USER'."
@@ -272,13 +294,16 @@ if [[ "$TS_UP" == "true" ]]; then
       warn "Could not set the FileBrowser admin password automatically."
       warn "  'users update' said: ${FB_ERR_UPDATE:-<no output>}"
       warn "  'users add' said:    ${FB_ERR_ADD:-<no output>}"
-      warn "List the accounts the container actually has with:"
-      warn "  docker exec -it homedrive-filebrowser /filebrowser -d /database/filebrowser.db users ls"
-      warn "Then do it manually before using the drive:"
-      warn "  docker exec -it homedrive-filebrowser /filebrowser -d /database/filebrowser.db users update $FILEBROWSER_ADMIN_USER --password '<password>'"
+      warn "Do it manually. The service must be STOPPED for the CLI to open the database:"
+      warn "  docker compose stop filebrowser"
+      warn "  docker run --rm -it --user ${PUID}:${PGID} -v ${DATA_PATH}/filebrowser:/database --entrypoint filebrowser filebrowser/filebrowser -d /database/filebrowser.db users update $FILEBROWSER_ADMIN_USER --password '<password>'"
+      warn "  docker compose start filebrowser"
     fi
+
+    info "Restarting filebrowser…"
+    "${COMPOSE[@]}" start filebrowser >/dev/null
   else
-    warn "FileBrowser database was not created — skipping the admin password reset."
+    warn "FileBrowser database was not created. Skipping the admin password reset."
     warn "Re-run this script once 'docker compose ps' shows filebrowser healthy."
   fi
 fi
