@@ -148,7 +148,8 @@ nothing to do here — just confirm it looks right:
 /mnt/data/
 ├── files/          → FileBrowser root (/srv inside the container)
 ├── filebrowser/    → FileBrowser SQLite database (created on first start)
-├── couchdb/        → CouchDB data files
+├── couchdb/        → CouchDB data files (owned by uid 5984)
+├── couchdb-etc/    → staged CouchDB config, owned by uid 5984 (see below)
 ├── backups/        → nightly archives (mode 0700)
 └── tmp/            → staging for backup/restore (never /tmp — that is a RAM tmpfs)
 ```
@@ -161,8 +162,33 @@ sudo chown "$(id -u):$(id -g)" /mnt/data /mnt/data/{files,filebrowser,backups,tm
 sudo chmod 700 /mnt/data/backups
 ```
 
-`/mnt/data/couchdb` is left alone deliberately — the CouchDB image's entrypoint chowns its
-own data directory to the `couchdb` user on every start.
+### Why `couchdb-etc/` exists
+
+CouchDB's config is **not** mounted from `config/couchdb/` in the repo. `install.sh` copies
+it to `/mnt/data/couchdb-etc/` and chowns it to uid 5984 first, and compose mounts it from
+there.
+
+The reason is a sharp edge in the official image. Its entrypoint runs, under `set -e`:
+
+```sh
+find /opt/couchdb \! \( -user couchdb -group couchdb \) -exec chown -f couchdb:couchdb {} +
+```
+
+A file mounted from the repo is owned by *you*, not uid 5984, so `find` matches it and tries
+to `chown` it — which fails on a read-only bind mount. `chown -f` suppresses the message but
+not the exit status, `find` propagates it, and the entrypoint aborts **before CouchDB ever
+starts**. The symptom is brutal to debug: the container exits instantly, `docker compose logs
+couchdb` is completely empty, and the healthcheck just reports `restarting`.
+
+Staging a copy that is already owned by 5984 means `find` never matches it, so there is
+nothing to chown and nothing to fail.
+
+**To change CouchDB settings**: edit `config/couchdb/zz-homedrive.ini` as usual, then re-run
+`bash scripts/install.sh` (or `sudo cp` it into `/mnt/data/couchdb-etc/` and
+`sudo chown 5984:5984` it) and `docker compose restart couchdb`. Editing the staged copy
+directly works too, but the next `install.sh` run overwrites it.
+
+`/mnt/data/couchdb` itself is chowned to 5984 by `install.sh` for the same reason.
 
 ---
 

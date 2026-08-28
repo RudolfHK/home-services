@@ -167,6 +167,27 @@ sudo chmod 700 "${DATA_PATH}/backups"
 info "Setting CouchDB data ownership to 5984:5984…"
 sudo chown -R 5984:5984 "${DATA_PATH}/couchdb"
 
+# CouchDB reads every *.ini in /opt/couchdb/etc/local.d/, but our config cannot
+# be mounted straight out of the git repo. The image entrypoint runs, under
+# `set -e`:
+#     find /opt/couchdb \! \( -user couchdb -group couchdb \) \
+#          -exec chown -f couchdb:couchdb {} +
+# A repo file is owned by you, not by uid 5984, so find matches it and tries to
+# chown it — on a read-only bind mount that fails. `chown -f` suppresses the
+# message but not the exit status, find propagates it, and the entrypoint aborts
+# before CouchDB ever starts. The symptom is a container that exits instantly
+# with completely empty logs.
+#
+# Staging a copy that is ALREADY owned by 5984:5984 means find never matches it,
+# so there is nothing to chown and nothing to fail. The copy is refreshed on
+# every run, so editing config/couchdb/zz-homedrive.ini still works normally.
+info "Staging the CouchDB config for uid 5984…"
+sudo mkdir -p "${DATA_PATH}/couchdb-etc"
+sudo cp "$PROJECT_DIR/config/couchdb/zz-homedrive.ini" \
+        "${DATA_PATH}/couchdb-etc/zz-homedrive.ini"
+sudo chown -R 5984:5984 "${DATA_PATH}/couchdb-etc"
+sudo chmod 644 "${DATA_PATH}/couchdb-etc/zz-homedrive.ini"
+
 # A previous version of this stack bind-mounted filebrowser.db as a FILE. If the
 # path does not exist, Docker creates a DIRECTORY there and FileBrowser cannot
 # open its database. The mount is now the parent directory, but clean up the

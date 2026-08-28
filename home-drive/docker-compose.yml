@@ -179,12 +179,27 @@ services:
 
     volumes:
       # Custom CouchDB config (CORS, single-node, auth, LiveSync sizing).
+      #
       # Mounted into local.d/ with a `zz-` prefix rather than replacing
       # local.ini: CouchDB loads default.ini → default.d/* → local.ini →
       # local.d/* in sorted order, and the image ships
       # local.d/10-docker-default.ini which sets `[chttpd] bind_address = any`.
       # Anything we put in local.ini would be silently overridden by it.
-      - ./config/couchdb/zz-homedrive.ini:/opt/couchdb/etc/local.d/zz-homedrive.ini:ro
+      #
+      # Mounted from ${DATA_PATH}/couchdb-etc/, NOT from ./config/. install.sh
+      # stages a copy there owned by uid 5984. Mounting the repo file directly
+      # makes the container exit instantly with empty logs: the entrypoint runs
+      # `find /opt/couchdb \! -user couchdb -exec chown -f ... +` under `set -e`,
+      # and a file it cannot chown (read-only mount, wrong owner) aborts the
+      # whole entrypoint before CouchDB starts. Owning it as 5984 means find
+      # never matches it. Edit config/couchdb/zz-homedrive.ini and re-run
+      # install.sh to apply changes.
+      - type: bind
+        source: ${DATA_PATH}/couchdb-etc/zz-homedrive.ini
+        target: /opt/couchdb/etc/local.d/zz-homedrive.ini
+        read_only: true
+        bind:
+          create_host_path: false
       # Data stored on the external SSD for durability
       - type: bind
         source: ${DATA_PATH}/couchdb
