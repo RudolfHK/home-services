@@ -201,11 +201,14 @@ info "Starting services…"
 "${COMPOSE[@]}" up -d
 
 # ── 9. Wait for Tailscale to authenticate ─────────────────────────────────────
+# `tailscale status --json` is PRETTY-PRINTED (json.MarshalIndent), so the raw
+# text reads `"BackendState": "Running",` WITH a space after the colon. Strip
+# whitespace before matching, or this never fires.
 info "Waiting for Tailscale to authenticate (up to 120 s)…"
 TS_UP=false
 for _ in $(seq 1 24); do
   if docker exec homedrive-tailscale tailscale status --json 2>/dev/null \
-       | grep -q '"BackendState":"Running"'; then
+       | tr -d '[:space:]' | grep -q '"BackendState":"Running"'; then
     TS_UP=true
     break
   fi

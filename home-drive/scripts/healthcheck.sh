@@ -97,7 +97,8 @@ if command -v jq &>/dev/null; then
 else
   # jq is used elsewhere in this project, but the health check should still work
   # on a box where it is missing rather than reporting a false failure.
-  TS_STATE=$(echo "$TS_JSON" | grep -o '"BackendState":"[^"]*"' | cut -d'"' -f4)
+  # tailscale pretty-prints its JSON; collapse whitespace before matching.
+  TS_STATE=$(echo "$TS_JSON" | tr -d '[:space:]' | grep -o '"BackendState":"[^"]*"' | cut -d'"' -f4)
   TS_IP="(jq not installed)"
   TS_STATE="${TS_STATE:-unknown}"
 fi

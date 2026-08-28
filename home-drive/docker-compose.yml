@@ -76,13 +76,19 @@ services:
       # `tailscale status` exits 0 while the backend is still NeedsLogin or
       # Starting, so testing the exit code alone would let dependent services
       # start before the tailnet is actually up. Assert on BackendState instead.
+      #
+      # `tailscale status --json` PRETTY-PRINTS its output (json.MarshalIndent),
+      # so the raw line reads `"BackendState": "Running",` WITH a space after the
+      # colon. Strip all whitespace first, or a `"BackendState":"Running"` match
+      # never fires and the container sits in `health: starting` forever while
+      # every dependent service waits on it.
       test:
         - CMD-SHELL
-        - "tailscale status --json | grep -q '\"BackendState\":\"Running\"'"
-      interval: 30s
+        - "tailscale status --json | tr -d '[:space:]' | grep -q '\"BackendState\":\"Running\"'"
+      interval: 10s
       timeout: 10s
-      retries: 5
-      start_period: 30s
+      retries: 6
+      start_period: 45s
 
   # ── 2. FileBrowser ───────────────────────────────────────────────────────
   # Lightweight web file manager.  Runs on port 8080 inside the tailscale
