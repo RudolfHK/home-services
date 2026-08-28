@@ -27,7 +27,7 @@ peer-to-peer connection needed — devices only need to reach the Pi via Tailsca
 
 Open the Fauxton admin UI:
 ```
-https://homepi.<tailnet>.ts.net/couchdb/_utils/
+https://homepi.<tailnet>.ts.net:8443/_utils/
 ```
 
 1. Log in with `COUCHDB_USER` / `COUCHDB_PASSWORD` from your `.env`.
@@ -101,7 +101,7 @@ For large vaults with many binary attachments, adjust in the plugin settings:
 ### Troubleshooting LiveSync
 
 **"CORS error" in browser console or plugin status:**
-- Check `config/couchdb/local.ini` includes `app://obsidian.md` and `capacitor://localhost` in the `origins` list.
+- Check `config/couchdb/zz-homedrive.ini` includes `app://obsidian.md` and `capacitor://localhost` in the `origins` list.
 - Restart CouchDB: `docker compose restart couchdb`
 
 **"Conflict" badges on notes:**

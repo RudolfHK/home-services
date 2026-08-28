@@ -77,13 +77,40 @@ docker compose restart tailscale
 
 The current configuration maps:
 - `https://homepi.<tailnet>.ts.net/` → FileBrowser (port 8080)
-- `https://homepi.<tailnet>.ts.net/couchdb/` → CouchDB (port 5984)
+- `https://homepi.<tailnet>.ts.net/couchdb/` → CouchDB API (port 5984)
+- `https://homepi.<tailnet>.ts.net:8443/` → CouchDB at the root, for Fauxton
+
+#### `${TS_CERT_DOMAIN}` is the only variable that is expanded
+
+`containerboot` (the tailscale image's entrypoint) substitutes exactly one placeholder in
+this file: `${TS_CERT_DOMAIN}`, which it replaces with the node's MagicDNS name.
+
+Anything else — `${TS_HOSTNAME}`, `${TS_TAILNET}`, any other environment variable — is
+**not** expanded. It reaches `tailscaled` verbatim, producing a serve config keyed on a
+hostname that does not exist. The symptom is nasty: every container reports healthy, the
+node shows up in the admin console, and nothing answers on port 443. Always use
+`${TS_CERT_DOMAIN}`.
+
+JSON has no comment syntax and `tailscaled` validates the file, so keep notes in
+`config/tailscale/README.md` rather than adding keys to `serve.json`.
+
+#### Why CouchDB is also served on 8443
+
+Tailscale strips the mount-point prefix before proxying, so CouchDB's REST API works fine
+under `/couchdb/` — that is the URI to give Obsidian LiveSync.
+
+Fauxton (CouchDB's admin UI) does **not** work under a prefix: its bundle requests absolute
+paths such as `/_all_dbs`, which on port 443 resolve to `/` and are routed to FileBrowser
+instead. Port 8443 serves CouchDB at the root so Fauxton works there.
 
 To verify the serve config is active:
 
 ```bash
 docker exec homedrive-tailscale tailscale serve status
 ```
+
+Both ports use `serve`, not `funnel` — they are reachable from your tailnet only, never
+from the public internet.
 
 ---
 
@@ -115,6 +142,18 @@ ports:
   - "127.0.0.1:5984:5984"   # couchdb
 ```
 
+Two further changes are required, because approach A binds both services to loopback
+*inside the tailscale network namespace*:
+
+- `config/filebrowser/settings.json` → set `"address": "0.0.0.0"`, otherwise FileBrowser
+  listens only on the container's own loopback and the published port never connects.
+- `config/couchdb/zz-homedrive.ini` → set `bind_address = 0.0.0.0` under `[chttpd]`, or
+  simply delete that line so the image's `local.d/10-docker-default.ini` default (`any`)
+  applies again.
+
+Losing loopback-only binding is the real cost of approach B: with published ports the
+services are reachable from the Pi's LAN interface too, not just the tailnet.
+
 **Pros:** Simpler Docker config, easier to debug.  
 **Cons:** Tailscale updates require host-level management; approach A is more portable.
 
@@ -127,16 +166,19 @@ ports:
 3. Open `https://homepi.<tailnet>.ts.net/` in your mobile browser — FileBrowser loads.
 4. For Obsidian LiveSync, the CouchDB URL is:
    `https://homepi.<tailnet>.ts.net/couchdb/`
+5. For the CouchDB admin UI, use `https://homepi.<tailnet>.ts.net:8443/_utils/`
 
 ---
 
 ## Port / URL Reference
 
-| Service          | Tailnet URL                                         | Internal port |
-|------------------|-----------------------------------------------------|---------------|
-| FileBrowser      | `https://<hostname>.<tailnet>.ts.net/`              | 8080          |
-| CouchDB API      | `https://<hostname>.<tailnet>.ts.net/couchdb/`      | 5984          |
-| CouchDB Fauxton  | `https://<hostname>.<tailnet>.ts.net/couchdb/_utils/` | 5984        |
+| Service          | Tailnet URL                                              | Internal port |
+|------------------|----------------------------------------------------------|---------------|
+| FileBrowser      | `https://<hostname>.<tailnet>.ts.net/`                    | 8080          |
+| CouchDB API      | `https://<hostname>.<tailnet>.ts.net/couchdb/`            | 5984          |
+| CouchDB Fauxton  | `https://<hostname>.<tailnet>.ts.net:8443/_utils/`        | 5984          |
+
+Fauxton is on **8443**, not under `/couchdb/` — see the `serve.json` section above.
 
 ---
 

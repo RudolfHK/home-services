@@ -4,14 +4,19 @@
 # All containers that need to be reachable via the tailnet use
 #   network_mode: service:tailscale
 # This puts them in the same network namespace as the Tailscale container, so
-# Tailscale's serve proxy can reach them on localhost.
+# Tailscale's serve proxy can reach them on 127.0.0.1.
+#
+# NOTE: no top-level `version:` key — it is obsolete in Compose v2 and only
+# produces a warning on every invocation.
 
-version: "3.9"
-
-# ── Named volumes ────────────────────────────────────────────────────────────
-volumes:
-  tailscale-state:   # Tailscale persistent state (keys, certs)
-  couchdb-data:      # CouchDB data — stored on the external drive via bind mount
+# ── Shared logging policy ────────────────────────────────────────────────────
+# Docker's default json-file driver grows without bound. On a Pi that means the
+# SD card fills up and the OS wedges. Cap every service at 30 MB total.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 # ── Services ─────────────────────────────────────────────────────────────────
 services:
@@ -21,18 +26,31 @@ services:
   # All other services share its network via `network_mode: service:tailscale`.
   # `tailscale serve` (configured via serve.json) proxies HTTPS to each service.
   tailscale:
-    image: tailscale/tailscale:latest   # ARM64-compatible official image
+    # Pin this in .env (e.g. TAILSCALE_TAG=v1.80.3) once you have a working
+    # deployment — `latest` can change behaviour under you on `docker compose pull`.
+    image: tailscale/tailscale:${TAILSCALE_TAG:-latest}
     container_name: homedrive-tailscale
     hostname: ${TS_HOSTNAME}
     restart: unless-stopped
+    logging: *default-logging
 
     environment:
       # Auth key from the Tailscale admin console
       TS_AUTHKEY: ${TS_AUTHKEY}
       # Hostname to register in the tailnet
       TS_HOSTNAME: ${TS_HOSTNAME}
-      # Path to the serve config inside the container
+      # Path to the serve config inside the container.
+      # Only ${TS_CERT_DOMAIN} is interpolated inside that file by containerboot —
+      # see config/tailscale/serve.json.
       TS_SERVE_CONFIG: /config/tailscale/serve.json
+      # Use the kernel WireGuard/TUN datapath instead of the userspace networking
+      # stack (the image default). Userspace mode copies every packet through Go,
+      # which roughly halves throughput on a Pi 5 — a real cost when the whole
+      # point of the box is moving files. Requires /dev/net/tun + NET_ADMIN,
+      # both configured below.
+      TS_USERSPACE: "false"
+      # Use the tailnet's MagicDNS resolver inside the container
+      TS_ACCEPT_DNS: "true"
       # Optional extra CLI flags (e.g. --advertise-tags=tag:server)
       TS_EXTRA_ARGS: ${TS_EXTRA_ARGS:-}
       # Store state in the named volume so the container survives restarts
@@ -44,16 +62,23 @@ services:
       - tailscale-state:/var/lib/tailscale
       # Serve config (read-only)
       - ./config/tailscale:/config/tailscale:ro
-      # WireGuard TUN device — required for Tailscale to function
+      # WireGuard TUN device — required for kernel-mode networking
       - /dev/net/tun:/dev/net/tun
 
     cap_add:
       - NET_ADMIN   # needed to manage the WireGuard interface
       - NET_RAW     # needed for raw socket operations
 
+    security_opt:
+      - no-new-privileges:true
+
     healthcheck:
-      # Consider the container healthy once `tailscale status` returns OK
-      test: ["CMD", "tailscale", "status", "--json"]
+      # `tailscale status` exits 0 while the backend is still NeedsLogin or
+      # Starting, so testing the exit code alone would let dependent services
+      # start before the tailnet is actually up. Assert on BackendState instead.
+      test:
+        - CMD-SHELL
+        - "tailscale status --json | grep -q '\"BackendState\":\"Running\"'"
       interval: 30s
       timeout: 10s
       retries: 5
@@ -63,9 +88,10 @@ services:
   # Lightweight web file manager.  Runs on port 8080 inside the tailscale
   # network namespace.  Access it via https://<hostname>.<tailnet>.ts.net/
   filebrowser:
-    image: filebrowser/filebrowser:latest   # ARM64 multi-arch image
+    image: filebrowser/filebrowser:${FILEBROWSER_TAG:-latest}   # ARM64 multi-arch image
     container_name: homedrive-filebrowser
     restart: unless-stopped
+    logging: *default-logging
 
     # Share the tailscale container's network — no separate IP, no host ports
     network_mode: service:tailscale
@@ -73,24 +99,50 @@ services:
       tailscale:
         condition: service_healthy
 
+    # The upstream filebrowser image is not a linuxserver.io image: it has no
+    # PUID/PGID handling and runs as root by default. Drop to the host user that
+    # owns DATA_PATH so files it creates are owned correctly, and so a container
+    # escape does not land on root.
+    user: "${PUID}:${PGID}"
+
     environment:
-      PUID: ${PUID}
-      PGID: ${PGID}
       TZ: ${TZ}
 
     volumes:
       # The directory FileBrowser will show to users
-      - ${DATA_PATH}/files:/srv
+      - type: bind
+        source: ${DATA_PATH}/files
+        target: /srv
+        bind:
+          # Fail loudly if the external drive is not mounted, instead of letting
+          # Docker create the path on the OS drive and silently writing there.
+          create_host_path: false
+      # SQLite database directory (users, shares, settings) — persisted on the SSD.
+      # Bind the DIRECTORY, not the .db file: a file bind mount whose host path
+      # does not exist yet makes Docker create a *directory* with that name,
+      # after which FileBrowser cannot open its database.
+      - type: bind
+        source: ${DATA_PATH}/filebrowser
+        target: /database
+        bind:
+          create_host_path: false
       # Settings file (port, auth, branding …)
       - ./config/filebrowser/settings.json:/config/settings.json:ro
-      # SQLite database (users, shares, audit log) — persisted on the SSD
-      - ${DATA_PATH}/filebrowser/filebrowser.db:/database/filebrowser.db
 
     # FileBrowser reads /config/settings.json at startup
     command: ["--config", "/config/settings.json"]
 
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      # busybox wget; /health exists on modern v2 builds — fall back to / so a
+      # healthy server is never reported as down on older tags.
+      test:
+        - CMD-SHELL
+        - "wget -q -O /dev/null http://127.0.0.1:8080/health || wget -q -O /dev/null http://127.0.0.1:8080/"
       interval: 30s
       timeout: 5s
       retries: 3
@@ -99,11 +151,12 @@ services:
   # ── 3. CouchDB ───────────────────────────────────────────────────────────
   # Obsidian Self-hosted LiveSync backend.
   # Runs on port 5984 inside the tailscale network namespace.
-  # Access the Fauxton admin UI at https://<hostname>.<tailnet>.ts.net/couchdb/_utils/
+  # Fauxton admin UI: https://<hostname>.<tailnet>.ts.net:8443/_utils/
   couchdb:
-    image: couchdb:3          # ARM64 official image, pinned to major version 3
+    image: couchdb:${COUCHDB_TAG:-3}   # ARM64 official image, pinned to major version 3
     container_name: homedrive-couchdb
     restart: unless-stopped
+    logging: *default-logging
 
     network_mode: service:tailscale
     depends_on:
@@ -111,20 +164,42 @@ services:
         condition: service_healthy
 
     environment:
-      # CouchDB admin credentials — referenced from .env
+      # CouchDB admin credentials — referenced from .env.
+      # The image entrypoint writes these into /opt/couchdb/etc/local.d/docker.ini
+      # on every start, so they are never persisted into the data directory.
       COUCHDB_USER: ${COUCHDB_USER}
       COUCHDB_PASSWORD: ${COUCHDB_PASSWORD}
       TZ: ${TZ}
 
     volumes:
-      # Custom CouchDB config (CORS, single-node, chunked sync settings)
-      - ./config/couchdb/local.ini:/opt/couchdb/etc/local.ini:ro
+      # Custom CouchDB config (CORS, single-node, auth, LiveSync sizing).
+      # Mounted into local.d/ with a `zz-` prefix rather than replacing
+      # local.ini: CouchDB loads default.ini → default.d/* → local.ini →
+      # local.d/* in sorted order, and the image ships
+      # local.d/10-docker-default.ini which sets `[chttpd] bind_address = any`.
+      # Anything we put in local.ini would be silently overridden by it.
+      - ./config/couchdb/zz-homedrive.ini:/opt/couchdb/etc/local.d/zz-homedrive.ini:ro
       # Data stored on the external SSD for durability
-      - ${DATA_PATH}/couchdb:/opt/couchdb/data
+      - type: bind
+        source: ${DATA_PATH}/couchdb
+        target: /opt/couchdb/data
+        bind:
+          create_host_path: false
+
+    security_opt:
+      - no-new-privileges:true
 
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:5984/"]
+      # /_up is exempted from require_valid_user by
+      # `require_valid_user_except_for_up = true` in zz-homedrive.ini.
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:5984/_up"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
+
+# ── Named volumes ────────────────────────────────────────────────────────────
+volumes:
+  tailscale-state:   # Tailscale persistent state (keys, certs)
+  # NOTE: CouchDB data lives in a bind mount under ${DATA_PATH}, not a named
+  # volume — the old unused `couchdb-data` declaration was removed.

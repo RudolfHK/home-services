@@ -1,7 +1,7 @@
 {
   "port": 8080,
   "baseURL": "",
-  "address": "0.0.0.0",
+  "address": "127.0.0.1",
   "log": "stdout",
   "database": "/database/filebrowser.db",
   "root": "/srv",
@@ -11,7 +11,7 @@
   },
   "branding": {
     "name": "Home Drive",
-    "disableExternal": false,
+    "disableExternal": true,
     "color": "",
     "theme": "dark"
   },

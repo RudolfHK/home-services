@@ -169,8 +169,8 @@ The Pi will now boot from NVMe on the PCIe HAT.
 
 ```bash
 # Clone the repo
-git clone https://github.com/<you>/homedrive-pi.git ~/homedrive-pi
-cd ~/homedrive-pi
+git clone https://github.com/<you>/home-services.git ~/home-services
+cd ~/home-services/home-drive
 
 # Copy and edit the environment file
 cp .env.example .env
