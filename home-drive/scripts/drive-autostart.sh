@@ -47,10 +47,13 @@ have_systemd() { command -v systemctl >/dev/null 2>&1; }
 unit_installed() { [[ -f "$UNIT_DEST" ]]; }
 
 running_count() {
-  local svc n=0
+  local svc n=0 state
   for svc in "${NC_SERVICES[@]}"; do
-    [[ "$(docker inspect -f '{{.State.Running}}' "homedrive-${svc}" 2>/dev/null)" == "true" ]] \
-      && n=$(( n + 1 ))
+    state="$(docker inspect -f '{{.State.Running}}' "homedrive-${svc}" 2>/dev/null)" || true
+    # An `if`, not `[[ … ]] && …`: the AND-list form returns non-zero when the
+    # test fails, and under `set -e` that aborts the script the moment one
+    # container is down — exactly when this count matters most.
+    if [[ "$state" == "true" ]]; then n=$(( n + 1 )); fi
   done
   printf '%s' "$n"
 }
@@ -104,6 +107,12 @@ cmd_install() {
   [[ "$EUID" -ne 0 ]] || error "Do not run this as root — the unit must run as the user in the docker group."
   [[ -f "$UNIT_SRC" ]] || error "$UNIT_SRC not found."
 
+  # Belt and braces: the unit names this file in ExecStart. A checkout that lost
+  # the exec bit — git with core.fileMode=false is the usual way — would fail
+  # with systemd's bare 203/EXEC and nothing to explain it. (The unit also
+  # invokes it through /bin/bash, so this is the second line of defence.)
+  chmod +x "$SCRIPT_DIR/drive-autostart.sh" 2>/dev/null || true
+
   info "Installing $UNIT_NAME…"
   sed -e "s|@PROJECT@|$PROJECT_DIR|g" \
       -e "s|@USER@|$(id -un)|g" \
@@ -151,8 +160,14 @@ cmd_status() {
   local enabled="not installed" active="-" mounted="no"
 
   if unit_installed && have_systemd; then
-    enabled="$(systemctl is-enabled "$UNIT_NAME" 2>/dev/null || echo unknown)"
-    active="$(systemctl is-active "$UNIT_NAME" 2>/dev/null || echo inactive)"
+    # Both of these print a status word AND exit non-zero for anything that is
+    # not active/enabled, so `cmd || echo fallback` printed BOTH — which is why
+    # a failed unit rendered as "failed" on one line and "inactive" on the next.
+    # Take the output, and fall back only when there is none.
+    enabled="$(systemctl is-enabled "$UNIT_NAME" 2>/dev/null)" || true
+    active="$(systemctl is-active "$UNIT_NAME" 2>/dev/null)" || true
+    [[ -n "$enabled" ]] || enabled="unknown"
+    [[ -n "$active" ]] || active="inactive"
   fi
   mountpoint -q "$DATA_PATH" 2>/dev/null && mounted="yes"
 

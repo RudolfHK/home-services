@@ -35,10 +35,10 @@ RemainAfterExit=yes
 User=@USER@
 WorkingDirectory=@PROJECT@
 
-ExecStart=@PROJECT@/scripts/drive-autostart.sh start
+ExecStart=/bin/bash @PROJECT@/scripts/drive-autostart.sh start
 # Stopping the unit stops the containers, which also gives PostgreSQL a clean
 # shutdown instead of leaving it to be killed when the machine goes down.
-ExecStop=@PROJECT@/scripts/drive-autostart.sh stop
+ExecStop=/bin/bash @PROJECT@/scripts/drive-autostart.sh stop
 
 # First boot after an image pull can spend minutes on a database upgrade, and
 # the mount wait is inside ExecStart.
