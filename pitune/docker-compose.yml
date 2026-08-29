@@ -1,0 +1,151 @@
+# docker-compose.yml — PiTune stack
+# Navidrome (local library) + a small FastAPI backend (YouTube search/audio via
+# yt-dlp) + nginx serving the frontend and proxying both APIs behind one origin.
+#
+# Only the frontend port is meant to be reached from other devices day to day —
+# everything else talks over the compose network. Navidrome's own port is also
+# published so you can reach its admin UI directly to create/manage users.
+#
+# NOTE: no top-level `version:` key — it is obsolete in Compose v2 and only
+# produces a warning on every invocation.
+
+# ── Shared logging policy ────────────────────────────────────────────────────
+# Docker's default json-file driver grows without bound. On a Pi that means the
+# SD card fills up and the OS wedges. Cap every service at 30 MB total.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  # ── 1. Navidrome — local library streaming (Subsonic API) ────────────────
+  navidrome:
+    image: deluan/navidrome:${NAVIDROME_TAG:-latest}
+    container_name: pitune-navidrome
+    restart: unless-stopped
+    logging: *default-logging
+
+    # Navidrome's own container runs as root by default and has no PUID/PGID
+    # env handling — set the uid/gid explicitly so it can read MUSIC_PATH and
+    # write ND_DATAFOLDER with the same ownership as the host user.
+    user: "${PUID}:${PGID}"
+
+    ports:
+      - "${NAVIDROME_PORT:-4533}:4533"
+
+    environment:
+      ND_MUSICFOLDER: /music
+      ND_DATAFOLDER: /data
+      ND_LOGLEVEL: ${ND_LOGLEVEL:-info}
+      ND_SCANSCHEDULE: ${ND_SCANSCHEDULE:-@every 1h}
+      # Reverse-proxied at /rest/ by the frontend container, but keep the
+      # direct port working too (mobile Subsonic apps, admin UI) — no
+      # ND_BASEURL override needed since we don't run it under a sub-path.
+      TZ: ${TZ}
+
+    volumes:
+      # Local music library. Read-only: Navidrome only ever scans, it never
+      # writes here. The backend's /api/save endpoint is the only writer.
+      - type: bind
+        source: ${MUSIC_PATH}
+        target: /music
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NAVIDROME_DATA_PATH}
+        target: /data
+        bind:
+          create_host_path: false
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      # The SPA shell is served on `/` with no auth required, so this proves
+      # the HTTP server is actually answering rather than merely running.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:4533/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ── 2. Backend — YouTube search + audio streaming via yt-dlp ─────────────
+  backend:
+    build: ./backend
+    container_name: pitune-backend
+    restart: unless-stopped
+    logging: *default-logging
+
+    environment:
+      TZ: ${TZ}
+      SEARCH_RESULT_LIMIT: ${SEARCH_RESULT_LIMIT:-20}
+      DOWNLOAD_ENABLED: ${DOWNLOAD_ENABLED:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      MUSIC_PATH: /music
+
+    volumes:
+      # rw only matters for /api/save (gated by DOWNLOAD_ENABLED above); set
+      # MUSIC_MOUNT_MODE=rw in .env only once you actually enable that feature.
+      - type: bind
+        source: ${MUSIC_PATH}
+        target: /music
+        bind:
+          create_host_path: false
+        read_only: ${MUSIC_MOUNT_MODE:-true}
+      # Optional cookies file for yt-dlp — the app only looks at the fixed
+      # container path /config/cookies.txt (see backend/app/main.py); this
+      # mount is what actually puts a real file there. Bind-mounting /dev/null
+      # when YTDLP_COOKIES_HOST_FILE is unset makes the path resolve to an
+      # empty, harmless file instead of failing the whole compose file.
+      - type: bind
+        source: ${YTDLP_COOKIES_HOST_FILE:-/dev/null}
+        target: /config/cookies.txt
+        read_only: true
+        bind:
+          create_host_path: false
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ── 3. Frontend — static UI + reverse proxy for backend & Navidrome ──────
+  # Browsers only ever talk to this one origin: /api/* goes to the backend,
+  # /rest/* (Subsonic) goes to Navidrome, everything else is the SPA. That
+  # sidesteps CORS entirely and keeps the whole app reachable at one URL,
+  # which matters for "open it on my phone on the same network".
+  frontend:
+    build: ./frontend
+    container_name: pitune-frontend
+    restart: unless-stopped
+    logging: *default-logging
+
+    depends_on:
+      backend:
+        condition: service_healthy
+      navidrome:
+        condition: service_healthy
+
+    ports:
+      - "${PITUNE_PORT:-8096}:80"
+
+    environment:
+      TZ: ${TZ}
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
