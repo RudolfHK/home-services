@@ -523,6 +523,7 @@ docker compose logs couchdb
 | `scripts/mount-drive.sh` | One-time: format and persistently mount the data drive |
 | `scripts/install.sh` | Bring the stack up. Idempotent — re-run it after any config change |
 | `scripts/install-drive.sh` | Install the optional Nextcloud drive: sync clients, sharing, file locking |
+| `scripts/drive-autostart.sh` | Turn the drive's start-at-boot on or off, and check which it is |
 | `scripts/install-monitoring.sh` | Install the health-check timer and the `homedrive-status` / `homedrive-health` commands |
 | `scripts/health-dashboard.sh` | The status screen: storage breakdown, transfer rates, file activity, Pi temperature and load. Also draws on a screen attached to the Pi |
 | `scripts/health-monitor.sh` | The unattended check: runs from a timer, quiet unless something is wrong, alerts via ntfy |

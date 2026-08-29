@@ -699,6 +699,33 @@ hd_collect_containers() {
   HD[drive_present]=0
   grep -qx "homedrive-nextcloud-app" <<< "$present" && HD[drive_present]=1
 
+  # Is the drive stopped on purpose, or broken?
+  #
+  # Turning autostart off (scripts/drive-autostart.sh off) leaves five exited
+  # containers behind. Treating those as five critical failures would page the
+  # owner every fifteen minutes for doing exactly what the switch is for.
+  #
+  # The distinguishing signal is all-or-nothing: a deliberate stop takes down
+  # every drive container together, while a genuine failure leaves some running.
+  # A cause that really can stop all five at once — the data drive vanishing —
+  # is already reported by the storage check, so nothing is lost by staying
+  # quiet here.
+  HD[drive_running]=0
+  if [[ "${HD[drive_present]}" == "1" ]]; then
+    local dsvc dstate
+    for dsvc in "${HD_SERVICES_DRIVE[@]}"; do
+      dstate="$(docker inspect -f '{{.State.Running}}' "homedrive-${dsvc}" 2>/dev/null || echo false)"
+      [[ "$dstate" == "true" ]] && HD[drive_running]=$(( HD[drive_running] + 1 ))
+    done
+    if [[ "${HD[drive_running]}" -eq 0 ]]; then
+      HD[drive_state]="stopped"
+    elif [[ "${HD[drive_running]}" -lt "${#HD_SERVICES_DRIVE[@]}" ]]; then
+      HD[drive_state]="degraded"
+    else
+      HD[drive_state]="running"
+    fi
+  fi
+
   local svc container inspect
   for svc in "${HD_SERVICES[@]}"; do
     container="homedrive-${svc}"
@@ -718,6 +745,13 @@ hd_collect_containers() {
     local started_epoch
     started_epoch="$(date -d "${HD["dk_${svc}_started"]}" +%s 2>/dev/null || echo '')"
     [[ -n "$started_epoch" ]] && HD["dk_${svc}_uptime"]=$(( ${HD[now]} - started_epoch ))
+
+    # A drive container that is down as part of a deliberate whole-drive stop is
+    # reported, but not as a failure.
+    if [[ "${HD[drive_state]:-}" == "stopped" && " ${HD_SERVICES_DRIVE[*]} " == *" $svc "* ]]; then
+      HD["dk_${svc}_level"]="off"
+      continue
+    fi
 
     if [[ "${HD["dk_${svc}_status"]}" != "running" ]]; then
       HD["dk_${svc}_level"]="crit"
@@ -828,6 +862,9 @@ hd_collect_couchdb() {
 hd_collect_nextcloud() {
   [[ "${HD[drive_present]:-0}" == "1" ]] || return 0
   HD[nc_up]=0
+
+  # Deliberately stopped as a whole: there is nothing to probe and nothing wrong.
+  [[ "${HD[drive_state]:-}" == "stopped" ]] && return 0
 
   # Note the hyphen: the key is built from the service name, "nextcloud-web".
   [[ "${HD["dk_nextcloud-web_status"]:-}" == "running" ]] || return 0

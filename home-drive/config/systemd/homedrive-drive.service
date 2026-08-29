@@ -1,0 +1,52 @@
+# Home Drive — bring the Nextcloud drive up at boot.
+#
+# Installed by scripts/drive-autostart.sh, which substitutes @USER@, @PROJECT@
+# and @DATA_PATH@.
+#
+# Why this exists when every container already has `restart: unless-stopped`:
+#
+#   * A restart policy only restores containers that still exist. After a
+#     `docker compose down` there is nothing to restore, and the drive silently
+#     does not come back after the next reboot.
+#   * A restart policy cannot wait for a filesystem. Every drive container binds
+#     paths under @DATA_PATH@ with create_host_path:false, so if Docker starts
+#     before the external drive is mounted they all fail to start and stay dead.
+#     RequiresMountsFor below, plus the wait loop in the script, is the fix.
+#
+# Division of labour: systemd owns starting the drive at boot, Docker's restart
+# policy owns recovering it from a crash while the machine is running.
+[Unit]
+Description=Home Drive — Nextcloud drive
+Documentation=file://@PROJECT@/docs/DRIVE.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+# Pulls in and orders after the mount unit for the data drive. Systemd derives
+# the unit name from the path, so this works for fstab, autofs and systemd
+# .mount units alike.
+RequiresMountsFor=@DATA_PATH@
+
+[Service]
+Type=oneshot
+# The containers keep running after `up -d` returns, so without this systemd
+# would consider the service dead the moment it finished and run ExecStop.
+RemainAfterExit=yes
+User=@USER@
+WorkingDirectory=@PROJECT@
+
+ExecStart=@PROJECT@/scripts/drive-autostart.sh start
+# Stopping the unit stops the containers, which also gives PostgreSQL a clean
+# shutdown instead of leaving it to be killed when the machine goes down.
+ExecStop=@PROJECT@/scripts/drive-autostart.sh stop
+
+# First boot after an image pull can spend minutes on a database upgrade, and
+# the mount wait is inside ExecStart.
+TimeoutStartSec=900
+TimeoutStopSec=120
+
+# NOTE: no Restart= here. systemd refuses any Restart= other than "no" on a
+# Type=oneshot unit, so retries live in the script's mount wait instead.
+
+[Install]
+WantedBy=multi-user.target

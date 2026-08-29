@@ -148,7 +148,10 @@ hd_render_services() {
   # Nextcloud, only when the drive is installed.
   if [[ "${HD[drive_present]:-0}" == "1" ]]; then
     local nc_level="crit" nc_text="not responding"
-    if [[ "${HD[nc_up]:-0}" == "1" ]]; then
+    if [[ "${HD[drive_state]:-}" == "stopped" ]]; then
+      nc_level="off"
+      nc_text="stopped  ${C_DIM}(bash scripts/drive-autostart.sh on)${C_RESET}"
+    elif [[ "${HD[nc_up]:-0}" == "1" ]]; then
       if [[ "${HD[nc_maintenance]:-}" == "true" ]]; then
         nc_level="warn"; nc_text="MAINTENANCE MODE — offline for everyone"
       elif [[ "${HD[nc_needs_upgrade]:-}" == "true" ]]; then
@@ -477,13 +480,17 @@ hd_render_compact() {
     "$C_DIM${HD[host]:-?} · ${HD[time]:-}" "$C_RESET"
   hd_rule
 
-  local up=0 svc
+  # Containers that are down as part of a deliberate whole-drive stop are not
+  # counted at all: "3/8 up" would read as an outage.
+  local up=0 total=0 svc
   for svc in "${HD_SERVICES[@]}"; do
+    [[ "${HD["dk_${svc}_level"]:-}" == "off" ]] && continue
+    total=$(( total + 1 ))
     [[ "${HD["dk_${svc}_level"]:-}" == "ok" ]] && up=$(( up + 1 ))
   done
   printf 'services %s%s/%s up%s   sync %s   web %s\n' \
-    "$( [[ "$up" == "${#HD_SERVICES[@]}" ]] && printf '%s' "$C_GREEN" || printf '%s' "$C_RED" )" \
-    "$up" "${#HD_SERVICES[@]}" "$C_RESET" \
+    "$( [[ "$up" == "$total" ]] && printf '%s' "$C_GREEN" || printf '%s' "$C_RED" )" \
+    "$up" "$total" "$C_RESET" \
     "$( [[ "${HD[couch_auth]:-0}" == "1" ]] && printf 'ok' || printf 'DOWN' )" \
     "$( [[ "${HD[fb_up]:-0}" == "1" ]] && printf 'ok' || printf 'DOWN' )"
 

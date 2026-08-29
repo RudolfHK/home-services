@@ -186,6 +186,51 @@ To take the drive down but leave the rest of the stack running:
 docker compose stop nextcloud-web nextcloud-app nextcloud-cron nextcloud-redis nextcloud-db
 ```
 
+### Autostart at boot
+
+`install-drive.sh` installs and enables `homedrive-drive.service`, so the drive comes back
+after every reboot. The switch:
+
+```bash
+bash scripts/drive-autostart.sh status   # is it on? is it running?
+bash scripts/drive-autostart.sh on
+bash scripts/drive-autostart.sh off
+```
+
+(`systemctl enable/disable homedrive-drive` does the same thing; the script exists so that
+`off` also stops the containers — see below for why that matters.)
+
+**Why a systemd unit when every container already has `restart: unless-stopped`?**
+Because that policy covers less than it appears to:
+
+| Situation | `restart: unless-stopped` | The unit |
+|---|---|---|
+| A container crashes while the Pi is running | ✅ restarts it | not involved |
+| Reboot, containers still exist | ✅ restores them | ✅ also fine |
+| Reboot after `docker compose down` | ❌ nothing exists to restore | ✅ recreates them |
+| **Docker starts before the USB drive mounts** | ❌ five failed containers | ✅ waits |
+
+That last row is the one that actually bites on a Pi. Every drive container binds a path
+under `${DATA_PATH}` with `create_host_path: false`, so if Docker wins the race against the
+external drive they all fail to start and simply stay dead. A restart policy has no way to
+express "wait for that filesystem"; the unit declares `RequiresMountsFor=${DATA_PATH}` and
+additionally waits (up to `DRIVE_MOUNT_WAIT`, default 180 s) for the four bind-mount
+directories to appear before calling `docker compose up -d`.
+
+So the two mechanisms split the job: **systemd owns starting the drive at boot, Docker's
+restart policy owns recovering it from a crash while the machine is running.**
+
+**Why `off` also stops the containers.** `unless-stopped` restores any container that was
+*running* when the daemon last stopped. Disabling the boot unit while leaving the drive up
+would therefore still bring it back at the next boot, and the switch would look broken.
+`drive-autostart.sh off` (and `systemctl disable --now`) stops them, which is what makes the
+setting stick.
+
+A deliberately stopped drive is **not** reported as a failure: the health check treats all
+five containers being down together as intentional and says `drive  stopped` rather than
+raising five critical alerts every fifteen minutes. Some-but-not-all down is still a real
+failure and still alerts.
+
 ### occ
 
 ```bash

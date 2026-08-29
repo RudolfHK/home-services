@@ -104,7 +104,7 @@ hd_init_style() {
   if [[ "$HD_ASCII" == "1" ]]; then
     G_FULL='#'; G_EMPTY='.'; G_H='-'; G_V='|'
     G_TL='+'; G_TR='+'; G_BL='+'; G_BR='+'
-    G_OK='ok'; G_WARN='!!'; G_CRIT='XX'; G_DOT='-'
+    G_OK='ok'; G_WARN='!!'; G_CRIT='XX'; G_DOT='--'
     HD_SPARK_CHARS=(_ _ . . - - = =)
   else
     G_FULL='█'; G_EMPTY='░'; G_H='─'; G_V='│'

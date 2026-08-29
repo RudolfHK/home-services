@@ -4,6 +4,7 @@
 #   bash scripts/install-drive.sh              # interactive
 #   bash scripts/install-drive.sh --yes        # never prompt
 #   bash scripts/install-drive.sh --skip-pull  # use images already on disk
+#   bash scripts/install-drive.sh --no-autostart   # do not start it at boot
 #
 # Safe to re-run: every step is idempotent. Re-run it after editing
 # config/nextcloud/zz-homedrive.config.php to apply the change.
@@ -22,11 +23,13 @@ NC_APP="homedrive-nextcloud-app"
 
 ASSUME_YES="${HOMEDRIVE_ASSUME_YES:-false}"
 SKIP_PULL="${HOMEDRIVE_SKIP_PULL:-false}"
+AUTOSTART=true
 for arg in "$@"; do
   case "$arg" in
     -y|--yes)    ASSUME_YES=true ;;
     --skip-pull) SKIP_PULL=true ;;
-    -h|--help)   sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --no-autostart) AUTOSTART=false ;;
+    -h|--help)   sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -245,7 +248,19 @@ COMPOSE_PROFILES=drive
 PROFILES
 fi
 
-# ── 9. Summary ───────────────────────────────────────────────────────────────
+# ── 9. Start at boot ────────────────────────────────────────────────
+# `restart: unless-stopped` alone is not enough: it cannot restore containers
+# that no longer exist after a `docker compose down`, and it cannot wait for the
+# external drive to mount before Docker tries to bind paths on it.
+if [[ "$AUTOSTART" == "true" ]]; then
+  info "Enabling autostart at boot…"
+  bash "$SCRIPT_DIR/drive-autostart.sh" install     || warn "Could not install the boot unit. Run: bash scripts/drive-autostart.sh on"
+else
+  warn "Skipping autostart (--no-autostart). Enable it later with:"
+  warn "  bash scripts/drive-autostart.sh on"
+fi
+
+# ── 10. Summary ───────────────────────────────────────────────────────────────
 echo ""
 echo "========================================================"
 echo -e "${GREEN}  The drive is up${NC}"
@@ -264,5 +279,12 @@ echo "  2. Create an app password per device rather than reusing your login:"
 echo "     Personal settings → Security → Devices & sessions"
 echo "  3. Read docs/DRIVE.md for how the locking works and what it does not cover."
 echo ""
-echo "  Check it:  bash scripts/health-dashboard.sh"
+echo "  Check it:  bash scripts/health-dashboard.sh --drive"
+echo ""
+if [[ "$AUTOSTART" == "true" ]]; then
+  echo "  Autostart : ON — the drive comes up on every boot."
+else
+  echo "  Autostart : OFF (--no-autostart)."
+fi
+echo "              bash scripts/drive-autostart.sh status | on | off"
 echo ""
