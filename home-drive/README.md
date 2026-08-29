@@ -248,12 +248,32 @@ rotate that password later.
 
 ```bash
 sudo apt-get install -y ufw fail2ban
+
+# Find YOUR LAN subnet first. Do not copy the example below verbatim — allowing
+# the wrong subnet and then enabling ufw locks you out of SSH.
+ip -br -4 addr show eth0        # e.g. 192.168.178.59/24 → use 192.168.178.0/24
+LAN=192.168.178.0/24            # <- change this to match
+
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
-sudo ufw allow from 192.168.1.0/24 to any port 22 proto tcp   # LAN SSH only
-sudo ufw allow in on tailscale0
+sudo ufw allow from "$LAN" to any port 22 proto tcp   # LAN SSH only
 sudo ufw enable
 sudo systemctl enable --now fail2ban
+```
+
+> **Do not add `ufw allow in on tailscale0`.** In this stack Tailscale runs *inside a
+> container*, so `tailscale0` exists only in that container's network namespace — there is no
+> such interface on the host and the rule matches nothing. Tailnet traffic reaches the
+> container as conntrack-established return traffic on the Docker bridge, which UFW already
+> permits. That rule only makes sense in the host-Tailscale variant (approach B in
+> [docs/TAILSCALE.md](docs/TAILSCALE.md)).
+
+If you already added rules referring to `tailscale0` or the wrong subnet, list them by number
+and delete them:
+
+```bash
+sudo ufw status numbered
+sudo ufw delete <number>        # highest number first — deleting renumbers the rest
 ```
 
 If you plan to use the nightly cron jobs further down this page, pre-create their log files
@@ -333,15 +353,27 @@ Both bind to loopback **inside the tailscale container's network namespace**. Th
 reachable by `tailscale serve` but not from the tailnet IP directly, so clients cannot skip
 the HTTPS proxy and speak plaintext HTTP to either service.
 
-## Nightly Cron (add to host crontab with `crontab -e`)
+## Scheduled jobs
+
+The health check installs itself as a systemd timer:
+
+```bash
+bash scripts/install-monitoring.sh
+```
+
+That runs the check every 15 minutes, puts `homedrive-health` and `homedrive-status` on
+your `PATH`, and — if a screen is attached to the Pi — flashes the result onto it for five
+seconds after each run. See [docs/MONITORING.md](docs/MONITORING.md).
+
+The backup is still a crontab entry (`crontab -e`):
 
 ```cron
 # Nightly backup at 02:30
 30 2 * * * /home/pi/home-services/home-drive/scripts/backup.sh >> /var/log/homedrive-backup.log 2>&1
-
-# Hourly health check
-0 * * * * /home/pi/home-services/home-drive/scripts/healthcheck.sh >> /var/log/homedrive-health.log 2>&1
 ```
+
+Prefer cron for the health check too? `bash scripts/install-monitoring.sh --cron` writes an
+hourly entry and a logrotate rule instead of the timer.
 
 ## Security model
 
@@ -360,7 +392,7 @@ archive synced to someone else's cloud, or a compromised container.
 | `.env` at mode 0600 | `install.sh` tightens it if you forget. It holds the tailnet auth key and both admin passwords. |
 | Backups at mode 0600, `backups/` at 0700 | The archive contains every note in the vault as plaintext JSON. |
 | `.env` excluded from backups | The archive can be pushed to third-party storage by rclone; secrets must not ride along. |
-| Credentials off the command line | `backup.sh`, `restore.sh` and `healthcheck.sh` hand passwords to `curl` through a config file on stdin. `ps auxww` shows every argument of a `docker exec`, and these run hourly from cron. |
+| Credentials off the command line | `backup.sh`, `restore.sh` and the monitoring library hand passwords to `curl` through a config file on stdin. `ps auxww` shows every argument of a `docker exec`, and these run every 15 minutes from a timer. |
 | `no-new-privileges`, `cap_drop: ALL` | On FileBrowser and CouchDB. The tailscale container keeps `NET_ADMIN`/`NET_RAW` because it has to manage a WireGuard interface. |
 | FileBrowser runs as `PUID:PGID` | Not root. The upstream image has no PUID/PGID handling, so this is set with compose's `user:`. |
 | No shell or command execution in FileBrowser | `commands` and `shell` are empty in `settings.json`. |
@@ -474,5 +506,20 @@ docker compose logs couchdb
 - [Hardware guide](docs/HARDWARE.md)
 - [OS + Docker setup](docs/SETUP.md)
 - [Tailscale integration](docs/TAILSCALE.md)
-- [Obsidian sync](docs/OBSIDIAN.md)
+- [Obsidian sync](docs/OBSIDIAN.md) — seed device, second device, and troubleshooting
 - [Backups](docs/BACKUP.md)
+- [Monitoring](docs/MONITORING.md) — the health check, the status screen, and alerts
+
+## Scripts
+
+| Script | What it does |
+|--------|--------------|
+| `scripts/mount-drive.sh` | One-time: format and persistently mount the data drive |
+| `scripts/install.sh` | Bring the stack up. Idempotent — re-run it after any config change |
+| `scripts/install-monitoring.sh` | Install the health-check timer and the `homedrive-status` / `homedrive-health` commands |
+| `scripts/health-dashboard.sh` | The status screen: storage breakdown, transfer rates, file activity, Pi temperature and load. Also draws on a screen attached to the Pi |
+| `scripts/health-monitor.sh` | The unattended check: runs from a timer, quiet unless something is wrong, alerts via ntfy |
+| `scripts/healthcheck.sh` | Compatibility shim — forwards to `health-monitor.sh` |
+| `scripts/backup.sh` | Nightly CouchDB + FileBrowser backup |
+| `scripts/restore.sh` | Restore from a backup archive |
+| `scripts/obsidian-check.sh` | Is Obsidian LiveSync actually reaching CouchDB? Document count and recent changes |

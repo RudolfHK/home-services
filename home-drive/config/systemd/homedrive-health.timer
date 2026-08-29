@@ -1,0 +1,21 @@
+# Home Drive — when the unattended health check runs.
+#
+# Every 15 minutes. More often than the old hourly cron entry for two reasons:
+# a drive that fell off the USB bus is worth noticing inside a quarter of an
+# hour, and the rate counters and sparkline history are only as good as the
+# sampling interval.
+[Unit]
+Description=Run the Home Drive health check every 15 minutes
+Requires=homedrive-health.service
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+# Keeps the check off the same second as every other timer on the box.
+RandomizedDelaySec=30s
+# Run once on resume if the Pi was asleep or powered off past a scheduled run.
+Persistent=true
+Unit=homedrive-health.service
+
+[Install]
+WantedBy=timers.target

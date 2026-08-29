@@ -44,10 +44,10 @@ Add to the Pi's crontab (`crontab -e` as the user running Docker):
 ```cron
 # Daily backup at 02:30, log to file
 30 2 * * * /home/pi/home-services/home-drive/scripts/backup.sh >> /var/log/homedrive-backup.log 2>&1
-
-# Hourly health check
-0 * * * * /home/pi/home-services/home-drive/scripts/healthcheck.sh >> /var/log/homedrive-health.log 2>&1
 ```
+
+The health check is no longer a cron entry — `scripts/install-monitoring.sh` installs it as
+a systemd timer that runs every 15 minutes. See [MONITORING.md](MONITORING.md).
 
 Logs rotate themselves (cron output); use `logrotate` for long-term log management:
 
@@ -90,8 +90,9 @@ truncated, or if the rclone push failed — so cron mails you even when `NTFY_UR
 set. A dump that is not valid CouchDB JSON is discarded rather than archived: an archive
 full of empty files that looks like a successful backup is worse than no archive at all.
 
-`healthcheck.sh` independently warns when the newest archive is more than 26 hours old and
-fails at 48 hours, which is what actually catches a cron job that quietly stopped running.
+`health-monitor.sh` independently warns when the newest archive is more than 26 hours old
+and fails at 48 hours, which is what actually catches a cron job that quietly stopped
+running. `homedrive-status` shows the newest archive's age, size, and how many are kept.
 
 ---
 

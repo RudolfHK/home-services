@@ -1,0 +1,33 @@
+# Home Drive — permanent status display on a screen attached to the Pi.
+#
+# OPTIONAL. Install with: scripts/install-monitoring.sh --screen
+#
+# This turns tty1 into a always-on dashboard, which means it fights the login
+# prompt for the same console. Disable that getty first:
+#   sudo systemctl disable --now getty@tty1
+#
+# Without this service you still get the five-second status flash after every
+# scheduled check, which is what most setups want.
+[Unit]
+Description=Home Drive status display on the attached screen
+Documentation=file://@PROJECT@/docs/MONITORING.md
+After=homedrive-health.service getty@tty1.service
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+User=@USER@
+SupplementaryGroups=tty
+WorkingDirectory=@PROJECT@
+# --duration 0 means "until stopped"; the dashboard redraws every 10 seconds.
+ExecStart=@PROJECT@/scripts/health-dashboard.sh --screen --force-screen --duration 0 --watch 10
+Restart=always
+RestartSec=15s
+# Give the console back on stop rather than leaving a frozen frame on the TV.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Nice=15
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target
