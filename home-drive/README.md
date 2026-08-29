@@ -38,6 +38,7 @@ A private, containerised home drive and shared Obsidian vault hosted on a Raspbe
 | FileBrowser   | `https://<TS_HOSTNAME>.<tailnet>.ts.net/`    |
 | CouchDB API   | `https://<TS_HOSTNAME>.<tailnet>.ts.net/couchdb/` |
 | CouchDB admin (Fauxton) | `https://<TS_HOSTNAME>.<tailnet>.ts.net:8443/_utils/` |
+| Drive (Nextcloud) — optional | `https://<TS_HOSTNAME>.<tailnet>.ts.net:9443/` |
 
 > Fauxton is served on **port 8443** at the root, not under `/couchdb/`. Its bundle requests
 > absolute paths like `/_all_dbs`, which under the `/couchdb/` prefix would be routed to
@@ -386,6 +387,9 @@ archive synced to someone else's cloud, or a compromised container.
 |---------|--------------|
 | No published host ports | Nothing in the stack is reachable from the LAN or the internet. Every request arrives through `tailscale serve`. |
 | Services bound to `127.0.0.1` | Inside the tailscale netns. Clients cannot bypass the HTTPS proxy and talk plaintext HTTP to FileBrowser or CouchDB over the tailnet IP. |
+| php-fpm bound to `127.0.0.1:9000` | The drive's most important binding. Sharing the tailscale netns means the image default of `listen = 9000` would publish an unauthenticated FastCGI socket — remote code execution — to the whole tailnet. Overridden in `config/nextcloud/zz-listen.conf`. |
+| PostgreSQL and Redis on loopback, Redis password-protected | Same reason. Set explicitly in `command:`, never left on the image default. |
+| Nextcloud `trusted_proxies` | Without it every request appears to come from localhost, and the brute-force protection rate-limits all users together instead of the one guessing passwords. |
 | `serve`, never `funnel` | Tailnet-only. Funnel (public internet exposure) is not configured anywhere and should not be. |
 | CouchDB `require_valid_user = true` | Set in `[chttpd]`, where CouchDB 3 actually reads it. `/_up` is the only exemption, so the container healthcheck needs no credentials. |
 | FileBrowser admin password forced from `.env` | `install.sh` resets it on every run instead of leaving FileBrowser's own default in place. |
@@ -509,6 +513,8 @@ docker compose logs couchdb
 - [Obsidian sync](docs/OBSIDIAN.md) — seed device, second device, and troubleshooting
 - [Backups](docs/BACKUP.md)
 - [Monitoring](docs/MONITORING.md) — the health check, the status screen, and alerts
+- [The drive](docs/DRIVE.md) — optional Nextcloud: sync clients, sharing, and how the file
+  locking works
 
 ## Scripts
 
@@ -516,6 +522,7 @@ docker compose logs couchdb
 |--------|--------------|
 | `scripts/mount-drive.sh` | One-time: format and persistently mount the data drive |
 | `scripts/install.sh` | Bring the stack up. Idempotent — re-run it after any config change |
+| `scripts/install-drive.sh` | Install the optional Nextcloud drive: sync clients, sharing, file locking |
 | `scripts/install-monitoring.sh` | Install the health-check timer and the `homedrive-status` / `homedrive-health` commands |
 | `scripts/health-dashboard.sh` | The status screen: storage breakdown, transfer rates, file activity, Pi temperature and load. Also draws on a screen attached to the Pi |
 | `scripts/health-monitor.sh` | The unattended check: runs from a timer, quiet unless something is wrong, alerts via ntfy |

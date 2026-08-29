@@ -44,7 +44,12 @@ HD_SCAN_INTERVAL_MIN="${HEALTH_SCAN_INTERVAL_MIN:-30}"
 HD_SCAN_TIMEOUT="${HEALTH_SCAN_TIMEOUT:-90}"
 HD_SCAN_MAX_FILES="${HEALTH_SCAN_MAX_FILES:-200000}"
 
-HD_SERVICES=(tailscale filebrowser couchdb)
+# The core stack. The Nextcloud drive is a profile-gated add-on, so its
+# containers are discovered at collection time rather than assumed — a stack
+# without the drive must not report five missing containers.
+HD_SERVICES_CORE=(tailscale filebrowser couchdb)
+HD_SERVICES_DRIVE=(nextcloud-db nextcloud-redis nextcloud-app nextcloud-web nextcloud-cron)
+HD_SERVICES=("${HD_SERVICES_CORE[@]}")
 
 # ── Issue bookkeeping ────────────────────────────────────────────────────────
 hd_issue() {
@@ -416,11 +421,62 @@ hd_collect_storage() {
   # Directory breakdown. couchdb/, filebrowser/ and backups/ are small enough to
   # walk every run; files/ is not — its size comes from the activity scan, which
   # is cached and time-boxed.
+  _hd_collect_dirs
+}
+
+# Where the space actually went, per top-level directory.
+#
+# Cached on the same interval as the file scan. couchdb/ and backups/ are cheap
+# to measure, but the Nextcloud tree is not, and this runs on every dashboard
+# refresh otherwise.
+_hd_collect_dirs() {
+  local data="${DATA_PATH:-/mnt/data}"
+  local state cache line key value
+  state="$(hd_state_dir)"
+  cache="$state/dirs.env"
+
+  if [[ "${HD_FORCE_DIR_SCAN:-0}" != "1" && -r "$cache" ]]; then
+    local age_min=$(( ( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0) ) / 60 ))
+    if [[ "$age_min" -lt "$HD_SCAN_INTERVAL_MIN" ]]; then
+      while IFS= read -r line; do
+        key="${line%%=*}"; value="${line#*=}"
+        [[ "$key" =~ ^[A-Za-z0-9_]+$ ]] || continue
+        HD["$key"]="$value"
+      done < "$cache"
+      return 0
+    fi
+  fi
+
   local sub
   for sub in couchdb filebrowser backups couchdb-etc; do
     [[ -d "$data/$sub" ]] || continue
     HD["dir_${sub//-/_}_bytes"]="$(du -sb "$data/$sub" 2>/dev/null | awk '{print $1}')"
   done
+
+  # Nextcloud's data directory is mode 750 owned by the web user, so the account
+  # running the health check cannot read it — du on the host returns nothing but
+  # permission errors. Measure it from inside the container instead, the same
+  # way backup.sh reads the config out.
+  if [[ "${HD[drive_present]:-0}" == "1" ]]; then
+    local nc_bytes=""
+    if command -v timeout >/dev/null 2>&1; then
+      nc_bytes="$(timeout 120 docker exec homedrive-nextcloud-app \
+                    du -sb /var/www/html/data 2>/dev/null | awk '{print $1}')"
+    else
+      nc_bytes="$(docker exec homedrive-nextcloud-app \
+                    du -sb /var/www/html/data 2>/dev/null | awk '{print $1}')"
+    fi
+    [[ "$nc_bytes" =~ ^[0-9]+$ ]] && HD[dir_nextcloud_bytes]="$nc_bytes"
+    [[ -d "$data/nextcloud/db" ]] && \
+      HD[dir_nextcloud_db_bytes]="$(sudo -n du -sb "$data/nextcloud/db" 2>/dev/null | awk '{print $1}')"
+  fi
+
+  {
+    for key in dir_couchdb_bytes dir_filebrowser_bytes dir_backups_bytes \
+               dir_couchdb_etc_bytes dir_nextcloud_bytes dir_nextcloud_db_bytes; do
+      [[ -n "${HD[$key]:-}" ]] && printf '%s=%s\n' "$key" "${HD[$key]}"
+    done
+  } > "$cache" 2>/dev/null || true
 }
 
 # ── File activity ────────────────────────────────────────────────────────────
@@ -551,6 +607,18 @@ hd_collect_containers() {
     return 0
   fi
 
+  # Rebuild the service list every run: in --watch mode this function is called
+  # repeatedly, and appending to the previous list would grow it without bound.
+  HD_SERVICES=("${HD_SERVICES_CORE[@]}")
+  local present
+  present="$(docker ps -a --filter 'name=homedrive-' --format '{{.Names}}' 2>/dev/null || true)"
+  local extra
+  for extra in "${HD_SERVICES_DRIVE[@]}"; do
+    grep -qx "homedrive-${extra}" <<< "$present" && HD_SERVICES+=("$extra")
+  done
+  HD[drive_present]=0
+  grep -qx "homedrive-nextcloud-app" <<< "$present" && HD[drive_present]=1
+
   local svc container inspect
   for svc in "${HD_SERVICES[@]}"; do
     container="homedrive-${svc}"
@@ -590,14 +658,16 @@ hd_collect_containers() {
   # Per-container CPU/memory. One docker stats call costs a second or two, so
   # only the dashboard asks for it.
   if [[ "${HD_WANT_CONTAINER_STATS:-0}" == "1" ]]; then
-    local line name cpu mem
+    local containers=()
+    for svc in "${HD_SERVICES[@]}"; do containers+=("homedrive-${svc}"); done
+    local name cpu mem
     while IFS=$'\t' read -r name cpu mem; do
       [[ -z "$name" ]] && continue
       svc="${name#homedrive-}"
       HD["dk_${svc}_cpu"]="$cpu"
       HD["dk_${svc}_mem"]="${mem%% /*}"
     done < <(docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}' \
-               homedrive-tailscale homedrive-filebrowser homedrive-couchdb 2>/dev/null || true)
+               "${containers[@]}" 2>/dev/null || true)
   fi
 }
 
@@ -668,6 +738,49 @@ hd_collect_couchdb() {
   local changes
   changes="$(_hd_couch_curl "${url}/${db}/_changes?descending=true&limit=1&include_docs=true")" || return 0
   HD[couch_last_change]="$(jq -r '(.results[0].doc.mtime // .results[0].doc.ctime // empty) | if . then (. / 1000 | floor) else empty end' <<< "$changes" 2>/dev/null)"
+}
+
+# ── Nextcloud (the drive) ────────────────────────────────────────────────────
+# status.php is the endpoint that answers the questions that matter after the
+# container is confirmed running: did the install finish, is it stuck in
+# maintenance mode, and is it waiting for a database upgrade after an image
+# pull? A container can be healthy in all three of those broken states.
+hd_collect_nextcloud() {
+  [[ "${HD[drive_present]:-0}" == "1" ]] || return 0
+  HD[nc_up]=0
+
+  # Note the hyphen: the key is built from the service name, "nextcloud-web".
+  [[ "${HD["dk_nextcloud-web_status"]:-}" == "running" ]] || return 0
+
+  local status
+  status="$(docker exec homedrive-nextcloud-web \
+              wget -q -O - "http://127.0.0.1:8081/status.php" 2>/dev/null || true)"
+
+  if [[ -z "$status" ]]; then
+    hd_issue crit nextcloud "the drive is not answering on :8081"
+    return 0
+  fi
+  HD[nc_up]=1
+
+  # status.php is a single flat JSON object; a grep is enough and keeps jq
+  # optional, exactly as the Tailscale check does.
+  _nc_field() { grep -o "\"$1\":[^,}]*" <<< "$status" | head -1 | cut -d: -f2- | tr -d '" '; }
+  HD[nc_installed]="$(_nc_field installed)"
+  HD[nc_maintenance]="$(_nc_field maintenance)"
+  HD[nc_needs_upgrade]="$(_nc_field needsDbUpgrade)"
+  HD[nc_version]="$(_nc_field versionstring)"
+
+  if [[ "${HD[nc_installed]}" != "true" ]]; then
+    hd_issue crit nextcloud "the drive is not installed — run scripts/install-drive.sh"
+  fi
+  if [[ "${HD[nc_maintenance]}" == "true" ]]; then
+    # Normal for the minute a backup takes; a problem if it is still true an
+    # hour later, because the drive is offline for everybody.
+    hd_issue warn nextcloud "the drive is in MAINTENANCE MODE — nobody can reach it"
+  fi
+  if [[ "${HD[nc_needs_upgrade]}" == "true" ]]; then
+    hd_issue crit nextcloud "database upgrade pending after an image change — run: docker exec -u www-data homedrive-nextcloud-app php occ upgrade"
+  fi
 }
 
 hd_collect_filebrowser() {
@@ -787,9 +900,12 @@ hd_collect_all() {
 
   hd_collect_system
   hd_collect_rates
-  hd_collect_storage
+  # Containers first: the storage breakdown needs to know whether the drive is
+  # installed before it can decide how to measure it.
   hd_collect_containers
+  hd_collect_storage
   hd_collect_couchdb
+  hd_collect_nextcloud
   hd_collect_filebrowser
   hd_collect_tailscale
   hd_collect_backups

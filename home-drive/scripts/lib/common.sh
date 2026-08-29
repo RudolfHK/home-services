@@ -45,6 +45,11 @@ hd_load_env() {
 # file manifest with it — exactly when they are most useful.
 hd_state_dir() {
   if [[ -n "${HD_STATE_DIR:-}" ]]; then
+    # Create it here too, not just in the search below: this branch is taken
+    # both when the answer was cached by an earlier call and when a caller
+    # exported the variable, and returning a path that does not exist turns
+    # every later write into a stream of redirection errors.
+    [[ -d "$HD_STATE_DIR" ]] || mkdir -p "$HD_STATE_DIR" 2>/dev/null || true
     printf '%s' "$HD_STATE_DIR"
     return 0
   fi

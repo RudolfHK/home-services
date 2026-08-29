@@ -5,6 +5,9 @@
     },
     "8443": {
       "HTTPS": true
+    },
+    "9443": {
+      "HTTPS": true
     }
   },
   "Web": {
@@ -22,6 +25,13 @@
       "Handlers": {
         "/": {
           "Proxy": "http://127.0.0.1:5984"
+        }
+      }
+    },
+    "${TS_CERT_DOMAIN}:9443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:8081"
         }
       }
     }

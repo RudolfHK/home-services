@@ -84,7 +84,7 @@ hd_render_services() {
     glyph="$(hd_level_glyph "$level")"
     line="$(printf '  %s%s%s %s %s %s' \
       "$color" "$glyph" "$C_RESET" \
-      "$(hd_fit "$svc" 13)" \
+      "$(hd_fit "$svc" 16)" \
       "$(hd_fit "${HD["dk_${svc}_status"]:-?}" 9)" \
       "$(hd_fit "${HD["dk_${svc}_health"]:-}" 9)")"
     # Uptime is meaningless for a container that is not running — showing the
@@ -107,7 +107,7 @@ hd_render_services() {
   [[ "${HD[ts_state]:-}" == "Running" ]] && ts_level="ok"
   printf '  %s%s%s %s %s%s%s' \
     "$(hd_level_color "$ts_level")" "$(hd_level_glyph "$ts_level")" "$C_RESET" \
-    "$(hd_fit "tailnet" 13)" "$C_CYAN" "$(hd_fit "${HD[ts_ip]:-no address}" 18)" "$C_RESET"
+    "$(hd_fit "tailnet" 16)" "$C_CYAN" "$(hd_fit "${HD[ts_ip]:-no address}" 18)" "$C_RESET"
   if [[ -n "${HD[ts_peers]:-}" ]]; then
     printf '%s%s/%s peers online%s' "$C_DIM" "${HD[ts_peers_online]:-0}" "${HD[ts_peers]}" "$C_RESET"
   fi
@@ -134,16 +134,35 @@ hd_render_services() {
       fi
     fi
   fi
-  printf '  %s%s%s %s%s\n' \
+  printf '  %s%s%s %s %s\n' \
     "$(hd_level_color "$couch_level")" "$(hd_level_glyph "$couch_level")" "$C_RESET" \
-    "$(hd_fit "sync" 13)" "$detail"
+    "$(hd_fit "sync" 16)" "$detail"
 
   # FileBrowser HTTP
   local fb_level="crit" fb_text="not responding on :8080"
   if [[ "${HD[fb_up]:-0}" == "1" ]]; then fb_level="ok"; fb_text="responding on :8080"; fi
-  printf '  %s%s%s %s%s\n' \
+  printf '  %s%s%s %s %s\n' \
     "$(hd_level_color "$fb_level")" "$(hd_level_glyph "$fb_level")" "$C_RESET" \
-    "$(hd_fit "web ui" 13)" "$fb_text"
+    "$(hd_fit "web ui" 16)" "$fb_text"
+
+  # Nextcloud, only when the drive is installed.
+  if [[ "${HD[drive_present]:-0}" == "1" ]]; then
+    local nc_level="crit" nc_text="not responding"
+    if [[ "${HD[nc_up]:-0}" == "1" ]]; then
+      if [[ "${HD[nc_maintenance]:-}" == "true" ]]; then
+        nc_level="warn"; nc_text="MAINTENANCE MODE — offline for everyone"
+      elif [[ "${HD[nc_needs_upgrade]:-}" == "true" ]]; then
+        nc_level="crit"; nc_text="database upgrade pending — run occ upgrade"
+      elif [[ "${HD[nc_installed]:-}" != "true" ]]; then
+        nc_level="crit"; nc_text="not installed — run scripts/install-drive.sh"
+      else
+        nc_level="ok"; nc_text="${HD[nc_version]:-} · locking active"
+      fi
+    fi
+    printf '  %s%s%s %s %s\n' \
+      "$(hd_level_color "$nc_level")" "$(hd_level_glyph "$nc_level")" "$C_RESET" \
+      "$(hd_fit "drive" 16)" "$nc_text"
+  fi
   printf '\n'
 }
 
@@ -163,7 +182,7 @@ hd_render_storage() {
 
     # Where the space actually went.
     local breakdown="" sub key
-    for sub in files couchdb filebrowser backups; do
+    for sub in files nextcloud couchdb filebrowser backups; do
       key="dir_${sub}_bytes"
       [[ -n "${HD[$key]:-}" ]] || continue
       [[ -n "$breakdown" ]] && breakdown+=" · "

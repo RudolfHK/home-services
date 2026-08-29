@@ -73,7 +73,13 @@ All backup settings live in `.env`:
 | `BACKUP_DEST` | `$DATA_PATH/backups` | Where archives are stored |
 | `BACKUP_KEEP` | `7` | How many daily archives to keep |
 | `BACKUP_INCLUDE_FILES` | `false` | Include `$DATA_PATH/files/` in the archive (needs `rsync`) |
+| `BACKUP_INCLUDE_NEXTCLOUD_DATA` | `false` | Include the drive's user files. The drive stays **offline** for the whole run — see [DRIVE.md](DRIVE.md) |
 | `RCLONE_REMOTE` | *(empty)* | rclone remote name for off-Pi copies |
+
+When the optional Nextcloud drive is running, the backup also puts it into maintenance
+mode, `pg_dump`s its database, verifies the dump is not truncated, and archives its
+`config/` directory — then takes it back out of maintenance mode, including on failure or
+Ctrl-C. A stack without the drive skips all of that silently. See [DRIVE.md](DRIVE.md).
 
 Host packages the script uses: `jq` and `tar` are required, `sqlite3` is strongly
 recommended (without it the FileBrowser database is copied with `cp`, which can catch it

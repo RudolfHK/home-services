@@ -219,8 +219,299 @@ services:
       retries: 3
       start_period: 20s
 
+  # ── 4. Nextcloud — the drive ─────────────────────────────────────────────
+  # Browser UI, desktop and mobile sync clients, users, sharing, versioning and
+  # — the reason it is Nextcloud rather than something lighter — real file
+  # locking. See docs/DRIVE.md.
+  #
+  # Four containers, all in the tailscale network namespace:
+  #   nextcloud-db     PostgreSQL      127.0.0.1:5432
+  #   nextcloud-redis  Redis           127.0.0.1:6379
+  #   nextcloud-app    PHP-FPM         127.0.0.1:9000
+  #   nextcloud-web    nginx           127.0.0.1:8081  ← tailscale serve :9443
+  #   nextcloud-cron   background jobs (no listener)
+  #
+  # SECURITY, and this is the trap that makes this stack different from every
+  # Nextcloud compose file on the internet: `network_mode: service:tailscale`
+  # puts these containers on the SAME network stack as Tailscale, which owns a
+  # tailnet IP. A database listening on 0.0.0.0 here is not "internal" — it is
+  # published to every device on your tailnet. Every service below is therefore
+  # pinned to 127.0.0.1 explicitly, never left on its image default.
+
+  nextcloud-db:
+    image: postgres:${POSTGRES_TAG:-16-alpine}
+    container_name: homedrive-nextcloud-db
+    # Profile-gated: a plain `docker compose up -d` starts the core stack only.
+    # The drive needs directories that install-drive.sh creates with specific
+    # uids, so it must never be started implicitly by install.sh.
+    profiles: ["drive"]
+
+    restart: unless-stopped
+    logging: *default-logging
+
+    network_mode: service:tailscale
+    depends_on:
+      tailscale:
+        condition: service_healthy
+
+    environment:
+      POSTGRES_DB: ${NEXTCLOUD_DB_NAME:-nextcloud}
+      POSTGRES_USER: ${NEXTCLOUD_DB_USER:-nextcloud}
+      POSTGRES_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
+      # Postgres refuses to initialise into a directory it considers non-empty
+      # or wrongly owned; PGDATA in a subdirectory of the mount sidesteps both.
+      PGDATA: /var/lib/postgresql/data/pgdata
+      TZ: ${TZ}
+
+    # Loopback only — see the security note above.
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1"]
+
+    volumes:
+      - type: bind
+        source: ${DATA_PATH}/nextcloud/db
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: false
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${NEXTCLOUD_DB_USER:-nextcloud} -d ${NEXTCLOUD_DB_NAME:-nextcloud}"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  nextcloud-redis:
+    image: redis:${REDIS_TAG:-7-alpine}
+    container_name: homedrive-nextcloud-redis
+    # Profile-gated: a plain `docker compose up -d` starts the core stack only.
+    # The drive needs directories that install-drive.sh creates with specific
+    # uids, so it must never be started implicitly by install.sh.
+    profiles: ["drive"]
+
+    restart: unless-stopped
+    logging: *default-logging
+
+    network_mode: service:tailscale
+    depends_on:
+      tailscale:
+        condition: service_healthy
+
+    environment:
+      TZ: ${TZ}
+      # redis-cli picks this up on its own, which keeps the password out of the
+      # healthcheck command line — and the healthcheck runs every 30 seconds.
+      REDISCLI_AUTH: ${NEXTCLOUD_REDIS_PASSWORD}
+
+    # Redis is what makes Nextcloud's transactional file locking work — the
+    # mechanism that stops two writers corrupting one file. It is not optional
+    # here. Password-protected as well as loopback-bound: everything else in
+    # this namespace could otherwise reach it without authenticating.
+    command:
+      - redis-server
+      - --bind
+      - 127.0.0.1
+      - --port
+      - "6379"
+      - --requirepass
+      - ${NEXTCLOUD_REDIS_PASSWORD}
+      - --save
+      - "900"
+      - "1"
+      - --maxmemory
+      - ${NEXTCLOUD_REDIS_MAXMEM:-256mb}
+      - --maxmemory-policy
+      - allkeys-lru
+
+    volumes:
+      - type: bind
+        source: ${DATA_PATH}/nextcloud/redis
+        target: /data
+        bind:
+          create_host_path: false
+
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -h 127.0.0.1 ping | grep -q PONG"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  nextcloud-app:
+    # Debian-based fpm image on purpose: www-data is uid 33, the number every
+    # Nextcloud document assumes. The -alpine variant uses uid 82, and the
+    # mismatch shows up as a data directory Nextcloud cannot write to.
+    # install-drive.sh asks the image for the real uid rather than trusting this.
+    image: nextcloud:${NEXTCLOUD_TAG:-stable-fpm}
+    container_name: homedrive-nextcloud-app
+    # Profile-gated: a plain `docker compose up -d` starts the core stack only.
+    # The drive needs directories that install-drive.sh creates with specific
+    # uids, so it must never be started implicitly by install.sh.
+    profiles: ["drive"]
+
+    restart: unless-stopped
+    logging: *default-logging
+
+    network_mode: service:tailscale
+    depends_on:
+      nextcloud-db:
+        condition: service_healthy
+      nextcloud-redis:
+        condition: service_healthy
+
+    environment:
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_DB: ${NEXTCLOUD_DB_NAME:-nextcloud}
+      POSTGRES_USER: ${NEXTCLOUD_DB_USER:-nextcloud}
+      POSTGRES_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
+
+      REDIS_HOST: 127.0.0.1
+      REDIS_HOST_PORT: "6379"
+      REDIS_HOST_PASSWORD: ${NEXTCLOUD_REDIS_PASSWORD}
+
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
+      # Nextcloud refuses any request whose Host header is not listed here.
+      NEXTCLOUD_TRUSTED_DOMAINS: ${TS_HOSTNAME}.${TS_TAILNET} localhost 127.0.0.1
+
+      # TLS is terminated by `tailscale serve`, so PHP sees plain HTTP. Without
+      # these three, Nextcloud builds http:// URLs, and the sync clients fail
+      # with redirect loops that look like a broken login.
+      OVERWRITEPROTOCOL: https
+      OVERWRITEHOST: ${TS_HOSTNAME}.${TS_TAILNET}:${NEXTCLOUD_PORT:-9443}
+      OVERWRITECLIURL: https://${TS_HOSTNAME}.${TS_TAILNET}:${NEXTCLOUD_PORT:-9443}
+
+      PHP_MEMORY_LIMIT: ${NEXTCLOUD_PHP_MEMORY:-512M}
+      PHP_UPLOAD_LIMIT: ${NEXTCLOUD_UPLOAD_LIMIT:-16G}
+      TZ: ${TZ}
+
+    volumes:
+      # Application code. A named volume, not a bind: the entrypoint unpacks and
+      # upgrades the whole tree here, and it must not live on the data drive
+      # where a missing mount would leave a half-written Nextcloud behind.
+      - nextcloud-html:/var/www/html
+      # User files and config DO go on the external drive.
+      - type: bind
+        source: ${DATA_PATH}/nextcloud/data
+        target: /var/www/html/data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${DATA_PATH}/nextcloud/config
+        target: /var/www/html/config
+        bind:
+          create_host_path: false
+      # php-fpm listens on all interfaces by default (zz-docker.conf). In this
+      # namespace that means the tailnet. Override it back to loopback.
+      - ./config/nextcloud/zz-listen.conf:/usr/local/etc/php-fpm.d/zz-listen.conf:ro
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      # Prove the FastCGI socket is actually accepting connections rather than
+      # merely that the process exists. No extra tooling in the image is needed:
+      # PHP itself can open the socket.
+      test: ["CMD-SHELL", "php -r \"exit(@fsockopen('127.0.0.1', 9000) ? 0 : 1);\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # The very first start unpacks the whole application into an empty volume
+      # and runs the installer, which on a Pi takes minutes.
+      start_period: 300s
+
+  nextcloud-web:
+    image: nginx:${NGINX_TAG:-alpine}
+    container_name: homedrive-nextcloud-web
+    # Profile-gated: a plain `docker compose up -d` starts the core stack only.
+    # The drive needs directories that install-drive.sh creates with specific
+    # uids, so it must never be started implicitly by install.sh.
+    profiles: ["drive"]
+
+    restart: unless-stopped
+    logging: *default-logging
+
+    network_mode: service:tailscale
+    depends_on:
+      - nextcloud-app
+
+    environment:
+      TZ: ${TZ}
+
+    volumes:
+      # Read-only view of the same application tree: nginx serves the static
+      # assets itself and hands .php to fpm.
+      - nextcloud-html:/var/www/html:ro
+      - ./config/nextcloud/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8081/status.php || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  nextcloud-cron:
+    image: nextcloud:${NEXTCLOUD_TAG:-stable-fpm}
+    container_name: homedrive-nextcloud-cron
+    # Profile-gated: a plain `docker compose up -d` starts the core stack only.
+    # The drive needs directories that install-drive.sh creates with specific
+    # uids, so it must never be started implicitly by install.sh.
+    profiles: ["drive"]
+
+    restart: unless-stopped
+    logging: *default-logging
+
+    network_mode: service:tailscale
+    depends_on:
+      nextcloud-db:
+        condition: service_healthy
+
+    # Nextcloud's background jobs (versions expiry, trash cleanup, file scans,
+    # and releasing locks whose owner went away) only run if something calls
+    # cron.php. Without this container the admin overview shows a permanent
+    # "last background job ran a long time ago" warning and stale locks survive.
+    entrypoint: /cron.sh
+
+    environment:
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_DB: ${NEXTCLOUD_DB_NAME:-nextcloud}
+      POSTGRES_USER: ${NEXTCLOUD_DB_USER:-nextcloud}
+      POSTGRES_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
+      REDIS_HOST: 127.0.0.1
+      REDIS_HOST_PORT: "6379"
+      REDIS_HOST_PASSWORD: ${NEXTCLOUD_REDIS_PASSWORD}
+      TZ: ${TZ}
+
+    volumes:
+      - nextcloud-html:/var/www/html
+      - type: bind
+        source: ${DATA_PATH}/nextcloud/data
+        target: /var/www/html/data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${DATA_PATH}/nextcloud/config
+        target: /var/www/html/config
+        bind:
+          create_host_path: false
+
+    security_opt:
+      - no-new-privileges:true
+
 # ── Named volumes ────────────────────────────────────────────────────────────
 volumes:
   tailscale-state:   # Tailscale persistent state (keys, certs)
+  nextcloud-html:    # Nextcloud application code (managed by the image)
   # NOTE: CouchDB data lives in a bind mount under ${DATA_PATH}, not a named
   # volume — the old unused `couchdb-data` declaration was removed.
