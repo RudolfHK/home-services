@@ -73,8 +73,10 @@ echo "Starting core services + PiTune + Jellyfin..."
 docker compose up -d
 
 # ── 7. Print the URL ─────────────────────────────────────────────────────
-port="$(grep -E '^PIHUB_PORT=' .env | cut -d= -f2 || true)"
-port="${port:-80}"
+env_value() { grep -E "^$1=" .env | tail -n1 | cut -d= -f2-; }
+port="$(env_value PIHUB_PORT)"; port="${port:-80}"
+navidrome_port="$(env_value NAVIDROME_PORT)"; navidrome_port="${navidrome_port:-4533}"
+jellyfin_port="$(env_value JELLYFIN_PORT)"; jellyfin_port="${jellyfin_port:-8096}"
 ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 ip="${ip:-<this-pi>}"
 
@@ -83,7 +85,7 @@ echo "== Done =="
 echo "Dashboard: http://$ip:$port/dashboard/"
 echo
 echo "One-time manual steps still needed:"
-echo "  1. Open http://$ip:\${NAVIDROME_PORT:-4533}/ and create your first Navidrome user."
-echo "  2. Open http://$ip:\${JELLYFIN_PORT:-8096}/ and run Jellyfin's setup wizard, then set"
+echo "  1. Open http://$ip:$navidrome_port/ and create your first Navidrome user."
+echo "  2. Open http://$ip:$jellyfin_port/ and run Jellyfin's setup wizard, then set"
 echo "     Dashboard → Networking → Base URL to '/jellyfin' and restart the jellyfin service."
 echo "  See README.md for details."

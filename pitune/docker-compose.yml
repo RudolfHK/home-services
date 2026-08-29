@@ -85,6 +85,15 @@ services:
       DOWNLOAD_ENABLED: ${DOWNLOAD_ENABLED:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       MUSIC_PATH: /music
+      # yt-dlp caches the expensive part of extraction here (notably the
+      # parsed player-JS signature/nsig functions), keyed by YouTube player
+      # version — reused across requests AND, with this on a named volume,
+      # across container restarts/updates too. Every /api/stream request
+      # already extracts a video's metadata twice (once to resolve Content-
+      # Type before the response starts, once more inside the actual yt-dlp
+      # subprocess) — without a persistent cache dir, a fresh container pays
+      # full extraction cost on both of those for every single track.
+      XDG_CACHE_HOME: /cache
 
     volumes:
       # rw only matters for /api/save (gated by DOWNLOAD_ENABLED above); set
@@ -106,6 +115,7 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - ytdlp-cache:/cache
 
     security_opt:
       - no-new-privileges:true
@@ -149,3 +159,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+# ── Named volumes ────────────────────────────────────────────────────────────
+volumes:
+  ytdlp-cache:   # yt-dlp's extractor cache (see backend's environment)

@@ -94,10 +94,23 @@
     coverArtUrl(id) { return this.url("getCoverArt", { id, size: 100 }); },
     async call(endpoint, extra) {
       const res = await fetch(this.url(endpoint, extra));
-      const data = await res.json();
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        // Navidrome down, still starting, or the reverse proxy itself
+        // returned an HTML error page — not something a JSON body describes.
+        throw new Error(`Navidrome returned an unexpected response (HTTP ${res.status})`);
+      }
       const body = data["subsonic-response"];
       if (!body || body.status !== "ok") {
-        throw new Error((body && body.error && body.error.message) || "Subsonic request failed");
+        const err = new Error((body && body.error && body.error.message) || "Subsonic request failed");
+        // Subsonic error codes 40/41 are the only ones that actually mean
+        // "these credentials are wrong" — anything else (rate limited,
+        // server error, unsupported client version...) is not a reason to
+        // throw away a saved login. See initLibrary()'s use of this flag.
+        err.authFailed = !!(body && body.error && [40, 41].includes(body.error.code));
+        throw err;
       }
       return body;
     },
@@ -262,19 +275,33 @@
   async function initLibrary() {
     const creds = Subsonic.load();
     if (!creds) {
+      document.getElementById("library-connection-error").classList.add("hidden");
       document.getElementById("library-login").classList.remove("hidden");
       return;
     }
     try {
       await Subsonic.ping();
+      document.getElementById("library-connection-error").classList.add("hidden");
       document.getElementById("library-login").classList.add("hidden");
       document.getElementById("library-browser").classList.remove("hidden");
       showArtists();
     } catch (err) {
-      Subsonic.clear();
-      document.getElementById("library-login").classList.remove("hidden");
       document.getElementById("library-browser").classList.add("hidden");
-      alert("Could not log in to Navidrome: " + err.message);
+      if (err.authFailed) {
+        // The saved password is actually wrong — asking again is correct.
+        Subsonic.clear();
+        document.getElementById("library-connection-error").classList.add("hidden");
+        document.getElementById("library-login").classList.remove("hidden");
+        alert("Could not log in to Navidrome: " + err.message);
+      } else {
+        // Looks like Navidrome (or the proxy in front of it) is temporarily
+        // unreachable, not a bad password — keep the saved login and offer
+        // a retry instead of forcing the user to type it in again.
+        document.getElementById("library-login").classList.add("hidden");
+        document.getElementById("library-connection-error-message").textContent =
+          "Could not reach Navidrome: " + err.message;
+        document.getElementById("library-connection-error").classList.remove("hidden");
+      }
     }
   }
 
@@ -285,6 +312,8 @@
     Subsonic.save(user, pass);
     await initLibrary();
   });
+
+  document.getElementById("library-retry").addEventListener("click", initLibrary);
 
   function renderBreadcrumbs() {
     const el = document.getElementById("library-breadcrumbs");
@@ -306,47 +335,73 @@
     rows.forEach((row) => list.appendChild(row));
   }
 
+  // A ping success at page load doesn't guarantee Navidrome stays up for
+  // every click afterwards (it can restart mid-session too) — every browse
+  // action below goes through this so a drop shows an in-place message
+  // instead of silently doing nothing (an uncaught rejection in an async
+  // onClick handler).
+  function renderLibraryError(message) {
+    const list = document.getElementById("library-list");
+    list.innerHTML = "";
+    const li = document.createElement("li");
+    li.className = "item-sub";
+    li.textContent = message;
+    list.appendChild(li);
+  }
+
   async function showArtists() {
     libraryStack = [{ label: "Artists", render: showArtists }];
     renderBreadcrumbs();
-    const data = await Subsonic.getArtists();
-    const index = (data.artists && data.artists.index) || [];
-    const artists = index.flatMap((idx) => idx.artist || []);
-    renderLibraryList(artists.map((a) => buildRow({
-      thumbUrl: a.coverArt ? Subsonic.coverArtUrl(a.coverArt) : null,
-      icon: "🎤",
-      title: a.name,
-      sub: `${a.albumCount || 0} album${a.albumCount === 1 ? "" : "s"}`,
-      onClick: () => showAlbums(a.id, a.name),
-    })));
+    try {
+      const data = await Subsonic.getArtists();
+      const index = (data.artists && data.artists.index) || [];
+      const artists = index.flatMap((idx) => idx.artist || []);
+      renderLibraryList(artists.map((a) => buildRow({
+        thumbUrl: a.coverArt ? Subsonic.coverArtUrl(a.coverArt) : null,
+        icon: "🎤",
+        title: a.name,
+        sub: `${a.albumCount || 0} album${a.albumCount === 1 ? "" : "s"}`,
+        onClick: () => showAlbums(a.id, a.name),
+      })));
+    } catch (err) {
+      renderLibraryError("Could not load artists: " + err.message);
+    }
   }
 
   async function showAlbums(artistId, artistName) {
     libraryStack.push({ label: artistName, render: () => showAlbums(artistId, artistName) });
     renderBreadcrumbs();
-    const data = await Subsonic.getArtist(artistId);
-    const albums = (data.artist && data.artist.album) || [];
-    renderLibraryList(albums.map((al) => buildRow({
-      thumbUrl: al.coverArt ? Subsonic.coverArtUrl(al.coverArt) : null,
-      icon: "💿",
-      title: al.name,
-      sub: al.year ? String(al.year) : "",
-      onClick: () => showSongs(al.id, al.name),
-    })));
+    try {
+      const data = await Subsonic.getArtist(artistId);
+      const albums = (data.artist && data.artist.album) || [];
+      renderLibraryList(albums.map((al) => buildRow({
+        thumbUrl: al.coverArt ? Subsonic.coverArtUrl(al.coverArt) : null,
+        icon: "💿",
+        title: al.name,
+        sub: al.year ? String(al.year) : "",
+        onClick: () => showSongs(al.id, al.name),
+      })));
+    } catch (err) {
+      renderLibraryError("Could not load albums: " + err.message);
+    }
   }
 
   async function showSongs(albumId, albumName) {
     libraryStack.push({ label: albumName, render: () => showSongs(albumId, albumName) });
     renderBreadcrumbs();
-    const data = await Subsonic.getAlbum(albumId);
-    const songs = (data.album && data.album.song) || [];
-    renderLibraryList(songs.map((s) => buildRow({
-      icon: "🎵",
-      title: s.title,
-      sub: s.artist,
-      durationText: s.duration ? formatTime(s.duration) : "",
-      onClick: () => enqueue({ title: s.title, artist: s.artist, src: Subsonic.streamUrl(s.id), source: "local" }),
-    })));
+    try {
+      const data = await Subsonic.getAlbum(albumId);
+      const songs = (data.album && data.album.song) || [];
+      renderLibraryList(songs.map((s) => buildRow({
+        icon: "🎵",
+        title: s.title,
+        sub: s.artist,
+        durationText: s.duration ? formatTime(s.duration) : "",
+        onClick: () => enqueue({ title: s.title, artist: s.artist, src: Subsonic.streamUrl(s.id), source: "local" }),
+      })));
+    } catch (err) {
+      renderLibraryError("Could not load tracks: " + err.message);
+    }
   }
 
   // ── YouTube search ──────────────────────────────────────────────────

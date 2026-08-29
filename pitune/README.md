@@ -48,6 +48,12 @@ published so you can reach its admin UI directly to create library users.
 - **Local library and YouTube share one player.** Both are just an `<audio>`
   `src` — a Navidrome Subsonic stream URL or a `/api/stream/<id>` URL — so one
   queue, one set of transport controls, one now-playing bar covers both.
+- **yt-dlp's own cache survives restarts.** Every `/api/stream` request
+  extracts a video's metadata twice (once to resolve `Content-Type` before
+  the response starts, once more inside the actual `yt-dlp` subprocess) —
+  `XDG_CACHE_HOME` points at a named volume specifically so the expensive
+  part of that (YouTube's player-JS signature functions, keyed by player
+  version) isn't recomputed from scratch after every container restart.
 
 ## Prerequisites
 
@@ -57,7 +63,75 @@ published so you can reach its admin UI directly to create library users.
 - Internet access for the YouTube features (obviously not needed for the
   local library)
 
+## Prepare the Pi
+
+Starting from a bare Pi 5. Skip whatever you've already done.
+
+### 1. Flash Raspberry Pi OS
+
+Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/) on another
+computer:
+
+1. Choose **Raspberry Pi 5** as the device and **Raspberry Pi OS Lite
+   (64-bit)** as the OS — Lite is enough, this whole stack is headless.
+2. Click the gear icon (⚙) / "Edit settings" **before** writing the image and
+   set: hostname, an SSH username/password (or your public key), and your
+   Wi-Fi details if you're not using Ethernet. This gets you a Pi you can SSH
+   into on first boot with no monitor/keyboard attached.
+3. Write the image, boot the Pi, then:
+   ```bash
+   ssh <user>@<hostname-or-ip>.local
+   ```
+
+### 2. Update and verify
+
+```bash
+sudo apt-get update && sudo apt-get full-upgrade -y
+uname -m                # must print: aarch64  (confirms the 64-bit OS)
+timedatectl              # "System clock synchronized: yes"
+sudo reboot
+```
+
+### 3. Install Docker and the Compose plugin
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker "$USER"
+newgrp docker            # apply the group without logging out
+
+docker version           # daemon reachable without sudo
+docker compose version   # must print v2.x — the plugin, not docker-compose
+```
+
+### 4. Where does your music library live?
+
+`MUSIC_PATH` just needs to be a directory the Pi can read — it does not have
+to be an external drive. If your library already fits comfortably on the
+Pi's boot storage (a large NVMe SSD, say), a plain directory there is fine.
+If you're pointing at a separate external drive instead:
+
+```bash
+lsblk -f                                  # identify the device, e.g. /dev/sda1
+sudo mkdir -p /mnt/music
+sudo mount /dev/sda1 /mnt/music
+```
+
+Then add it to `/etc/fstab` with the **`nofail`** option, so the Pi still
+boots normally even if that drive is ever unplugged (Docker will simply
+refuse to start the affected container instead — see
+[Troubleshooting](#troubleshooting) — rather than the whole Pi hanging at
+boot waiting for a missing mount):
+
+```bash
+blkid /dev/sda1        # copy the UUID
+sudo nano /etc/fstab    # add: UUID=<uuid>  /mnt/music  ext4  defaults,nofail  0  2
+sudo mount -a           # verify the fstab line is valid
+```
+
 ## Quick start
+
+> Assumes the Pi is already prepared — see [Prepare the Pi](#prepare-the-pi)
+> above.
 
 ```bash
 git clone https://github.com/<you>/home-services.git
@@ -161,6 +235,14 @@ extension), set `YTDLP_COOKIES_HOST_FILE` in `.env`, and
 **Library tab won't log in.** Confirm the account exists in Navidrome's own
 admin UI at `http://<pi-ip>:4533/` first — PiTune's login just forwards your
 credentials to Navidrome's Subsonic API, it doesn't create accounts.
+
+**Library tab shows "Could not reach Navidrome" with a Retry button, instead
+of the login form.** This is by design, not a stuck state: your saved login
+is kept (nothing said the password was wrong), and it means Navidrome itself
+is unreachable right now — most often it's still starting up, or mid-restart
+after an update. Click **Retry**, or just wait for `docker compose ps` to show it healthy
+again. The login form only reappears on an actual wrong-password response
+from Navidrome.
 
 **Navidrome doesn't see a file you just added.** Either wait for the next
 `ND_SCANSCHEDULE` tick or trigger a rescan from Navidrome's admin UI

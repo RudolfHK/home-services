@@ -69,6 +69,20 @@ Compose profiles — either can be stopped, crash, or be entirely absent from
   music library.** See `pitune/backend/app/main.py`. Add `downloads/` as a
   second Navidrome library from its own admin UI once you trust what's
   landing there.
+- **Jellyfin's healthcheck can't be a `/health` path check.** Setting Base
+  URL (required — see Quick start) moves ALL of Jellyfin's routes under that
+  prefix, `/health` included. A check hardcoded to `/health` would pass
+  before that one-time step and then fail forever right after it — with
+  `autoheal` watching, that's a real restart loop on a perfectly healthy
+  container. The healthcheck is a bare TCP connect instead, which doesn't
+  care what path Jellyfin answers on.
+- **The management API never blocks on a slow Docker call.** `docker-py` is
+  fully synchronous; calling it directly from an `async def` route would
+  freeze the *entire* API — including someone else's start/stop click —
+  for as long as that one call takes. Every docker-py and `psutil` call in
+  `management-api/app/main.py` runs via `asyncio.to_thread`, and the
+  per-container status checks in `/api/services` run concurrently rather
+  than one container at a time.
 
 ## Prerequisites
 
@@ -77,7 +91,85 @@ Compose profiles — either can be stopped, crash, or be entirely absent from
 - An existing music and/or video library on a separate drive
 - Internet access for YouTube search/streaming and image pulls
 
+## Prepare the Pi
+
+Starting from a bare Pi 5. Skip whatever you've already done.
+
+### 1. Flash Raspberry Pi OS
+
+Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/) on another
+computer:
+
+1. Choose **Raspberry Pi 5** as the device and **Raspberry Pi OS Lite
+   (64-bit)** as the OS — Lite is enough, this whole stack is headless.
+2. Click the gear icon (⚙) / "Edit settings" **before** writing the image and
+   set: hostname, an SSH username/password (or your public key), and your
+   Wi-Fi details if you're not using Ethernet. This gets you a Pi you can SSH
+   into on first boot with no monitor/keyboard attached.
+3. Write the image, boot the Pi, then:
+   ```bash
+   ssh <user>@<hostname-or-ip>.local
+   ```
+
+### 2. Update and verify
+
+```bash
+sudo apt-get update && sudo apt-get full-upgrade -y
+uname -m                # must print: aarch64  (confirms the 64-bit OS)
+timedatectl              # "System clock synchronized: yes"
+sudo reboot
+```
+
+### 3. Install Docker and the Compose plugin
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker "$USER"
+newgrp docker            # apply the group without logging out
+
+docker version           # daemon reachable without sudo
+docker compose version   # must print v2.x — the plugin, not docker-compose
+```
+
+### 4. Attach and mount the media drive
+
+Unlike PiTune alone, PiHub's storage layout (`music/ videos/ movies/ shows/
+downloads/ photos/ backups/` all under one `MEDIA_ROOT`) is really meant for
+a separate drive — Jellyfin libraries in particular get large fast.
+
+```bash
+lsblk -f                          # identify the device, e.g. /dev/sda1
+sudo mkdir -p /media/storage
+sudo mount /dev/sda1 /media/storage
+```
+
+Add it to `/etc/fstab` with the **`nofail`** option, so the Pi still boots
+normally even if the drive is ever unplugged — every bind mount in
+`docker-compose.yml` uses `create_host_path: false`, so a missing drive shows
+up as a service the dashboard reports "not found" (see
+[Troubleshooting](#troubleshooting)), not a Pi that won't boot:
+
+```bash
+blkid /dev/sda1        # copy the UUID
+sudo nano /etc/fstab    # add: UUID=<uuid>  /media/storage  ext4  defaults,nofail  0  2
+sudo mount -a           # verify the fstab line is valid
+```
+
+### 5. Check Jellyfin's hardware decode devices exist (optional)
+
+```bash
+ls -la /dev/video1[0-2]
+```
+
+If these don't exist, Jellyfin still works fine on software decoding — just
+comment out the `devices:` block for the `jellyfin` service in
+`docker-compose.yml` before starting the stack, or Compose will fail to
+start that container over a missing device path.
+
 ## Quick start
+
+> Assumes the Pi is already prepared — see [Prepare the Pi](#prepare-the-pi)
+> above.
 
 ```bash
 git clone https://github.com/<you>/home-services.git
@@ -193,6 +285,14 @@ isn't set — see step 2 of Quick start.
 
 **YouTube search/playback in PiTune fails with signature or 403 errors.**
 Stale `yt-dlp` — run `scripts/update-yt-dlp.sh`.
+
+**PiTune's Library tab shows "Could not reach Navidrome" with a Retry
+button, instead of asking to log in again.** By design — your saved login
+is kept, since nothing said the password was wrong, only that Navidrome
+itself didn't answer (most often it's still starting, or mid-restart after
+`pihub update`). Click **Retry**, or wait for `pihub status` to show
+`pihub-navidrome` as running. The login form only reappears on an actual
+wrong-password response.
 
 **`pihub stop jellyfin` (or any command) errors about an unknown service.**
 Make sure you're running the `pihub` script from this checkout (or via the

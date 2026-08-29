@@ -212,6 +212,15 @@ services:
       DOWNLOAD_ENABLED: ${DOWNLOAD_ENABLED:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       DOWNLOADS_PATH: /downloads
+      # yt-dlp caches the expensive part of extraction here (notably the
+      # parsed player-JS signature/nsig functions), keyed by YouTube player
+      # version — reused across requests AND, with this on a named volume,
+      # across container restarts/updates too. Every /api/stream request
+      # already extracts a video's metadata twice (once to resolve Content-
+      # Type before the response starts, once more inside the actual yt-dlp
+      # subprocess) — without a persistent cache dir, a fresh container
+      # pays full extraction cost on both of those for every single track.
+      XDG_CACHE_HOME: /cache
 
     volumes:
       # rw: this IS the writer for /api/save. Scoped to downloads/ only —
@@ -227,6 +236,7 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - ytdlp-cache:/cache
 
     security_opt:
       - no-new-privileges:true
@@ -327,10 +337,22 @@ services:
       - no-new-privileges:true
 
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8096/health || exit 1"]
+      # Deliberately NOT an HTTP path check. Setting Base URL (the one-time
+      # step this stack's README requires — see nginx/nginx.conf) moves ALL
+      # of Jellyfin's own routes under that prefix, /health included. A
+      # healthcheck hardcoded to /health would pass before that step and
+      # start failing forever right after it — and autoheal would then
+      # kill-loop a perfectly healthy container. A bare TCP connect proves
+      # the server is accepting connections without caring what path it
+      # answers on, so it stays correct on both sides of that setup step.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8096' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
     labels:
       - "autoheal=true"
+
+# ── Named volumes ────────────────────────────────────────────────────────────
+volumes:
+  ytdlp-cache:   # yt-dlp's extractor cache (see pitune-backend's environment)

@@ -29,6 +29,14 @@
           Navidrome's own admin UI if you haven't already.</p>
       </div>
 
+      <!-- Shown instead of the login form when a saved login exists but
+           Navidrome didn't answer (e.g. mid-restart) — the credentials are
+           kept, not re-requested, since nothing said they were wrong. -->
+      <div id="library-connection-error" class="login-box hidden">
+        <p id="library-connection-error-message">Could not reach Navidrome.</p>
+        <button id="library-retry">Retry</button>
+      </div>
+
       <div id="library-browser" class="browser hidden">
         <div class="breadcrumbs" id="library-breadcrumbs"></div>
         <ul class="item-list" id="library-list"></ul>

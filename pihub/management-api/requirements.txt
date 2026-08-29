@@ -2,3 +2,7 @@ fastapi==0.115.*
 uvicorn[standard]==0.32.*
 docker==7.1.*
 psutil==6.1.*
+# Imported directly (requests.exceptions.RequestException) even though the
+# `docker` package already pulls it in transitively — declared explicitly
+# since main.py depends on it directly, not just through docker-py.
+requests==2.32.*

@@ -15,6 +15,7 @@ tecnativa/docker-socket-proxy in front of the socket instead of trusting this
 allow-list alone.
 """
 
+import asyncio
 import logging
 import os
 import shutil
@@ -24,9 +25,10 @@ from typing import Optional
 
 import docker
 import psutil
-from docker.errors import APIError, NotFound
+from docker.errors import NotFound
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from requests.exceptions import RequestException
 
 logger = logging.getLogger("pihub.management-api")
 logging.basicConfig(level=logging.INFO)
@@ -107,7 +109,7 @@ def _lookup(service_id: str) -> dict:
     return service
 
 
-def _container_status(name: str) -> dict:
+def _container_status_sync(name: str) -> dict:
     try:
         c = _docker().containers.get(name)
     except NotFound:
@@ -117,12 +119,24 @@ def _container_status(name: str) -> dict:
         # started. Surfaced as ordinary data, not a 500, so the dashboard
         # shows "not found" instead of the request itself failing.
         return {"container": name, "state": "not_found", "health": None}
-    except APIError as exc:
+    except RequestException as exc:
         return {"container": name, "state": "error", "health": None, "detail": str(exc)}
 
     state = c.attrs.get("State", {})
     health = state.get("Health", {}).get("Status")
     return {"container": name, "state": state.get("Status", "unknown"), "health": health}
+
+
+async def _container_status(name: str) -> dict:
+    # docker-py is fully synchronous (it's `requests` underneath) — every
+    # call blocks. Offloading to a thread matters more here than it looks:
+    # without it, ONE slow docker call (a hung daemon, a container mid-
+    # restart) freezes this whole single-threaded API for everyone, start/
+    # stop clicks included, not just the /api/services request that made it.
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_container_status_sync, name), timeout=5.0)
+    except asyncio.TimeoutError:
+        return {"container": name, "state": "error", "health": None, "detail": "docker call timed out"}
 
 
 def _aggregate(statuses: list) -> str:
@@ -145,7 +159,11 @@ async def health():
 async def list_services():
     out = []
     for service in SERVICES:
-        statuses = [_container_status(name) for name in service["containers"]]
+        # Queried in parallel, not one container at a time: with core alone
+        # already at 4 containers, a fully sequential version of this call
+        # would need 4 (or 8, with pitune+jellyfin both up) blocking docker
+        # round-trips back to back for one dashboard poll.
+        statuses = await asyncio.gather(*(_container_status(name) for name in service["containers"]))
         out.append({
             "id": service["id"],
             "label": service["label"],
@@ -158,7 +176,18 @@ async def list_services():
     return {"services": out}
 
 
-def _act(service_id: str, action: str) -> dict:
+def _act_one_sync(name: str, action: str) -> dict:
+    try:
+        container = _docker().containers.get(name)
+        getattr(container, action)()
+        return {"container": name, "ok": True}
+    except NotFound:
+        return {"container": name, "ok": False, "detail": "container not found"}
+    except RequestException as exc:
+        return {"container": name, "ok": False, "detail": str(exc)}
+
+
+async def _act(service_id: str, action: str) -> dict:
     service = _lookup(service_id)
     if not service["manageable"]:
         raise HTTPException(
@@ -166,32 +195,32 @@ def _act(service_id: str, action: str) -> dict:
             detail=f"'{service_id}' is core infrastructure and can't be controlled from here",
         )
 
-    results = []
-    for name in service["containers"]:
-        try:
-            container = _docker().containers.get(name)
-            getattr(container, action)()
-            results.append({"container": name, "ok": True})
-        except NotFound:
-            results.append({"container": name, "ok": False, "detail": "container not found"})
-        except APIError as exc:
-            results.append({"container": name, "ok": False, "detail": str(exc)})
-    return {"service": service_id, "action": action, "results": results}
+    # Same reasoning as list_services(): three independent containers should
+    # not have to start/stop/restart one after another on the event loop.
+    results = await asyncio.gather(
+        *(asyncio.to_thread(_act_one_sync, name, action) for name in service["containers"])
+    )
+    return {"service": service_id, "action": action, "results": list(results)}
 
 
 @app.post("/api/services/{service_id}/start")
 async def start_service(service_id: str):
-    return _act(service_id, "start")
+    return await _act(service_id, "start")
 
 
 @app.post("/api/services/{service_id}/stop")
 async def stop_service(service_id: str):
-    return _act(service_id, "stop")
+    return await _act(service_id, "stop")
 
 
 @app.post("/api/services/{service_id}/restart")
 async def restart_service(service_id: str):
-    return _act(service_id, "restart")
+    return await _act(service_id, "restart")
+
+
+def _logs_sync(name: str, lines: int) -> bytes:
+    c = _docker().containers.get(name)
+    return c.logs(tail=lines, timestamps=True)
 
 
 @app.get("/api/services/{service_id}/logs")
@@ -203,11 +232,10 @@ async def service_logs(
     service = _lookup(service_id)
     name = container if container in service["containers"] else service["containers"][0]
     try:
-        c = _docker().containers.get(name)
-        log_bytes = c.logs(tail=lines, timestamps=True)
+        log_bytes = await asyncio.to_thread(_logs_sync, name, lines)
     except NotFound:
         raise HTTPException(status_code=404, detail=f"Container '{name}' not found")
-    except APIError as exc:
+    except RequestException as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return {"container": name, "lines": log_bytes.decode("utf-8", errors="replace").splitlines()}
 
@@ -225,6 +253,14 @@ async def system_stats():
     boot_time = psutil.boot_time()
     uptime_seconds = max(0.0, time.time() - boot_time) if boot_time else None
 
+    # psutil.cpu_percent's interval blocks for its full duration (it's a
+    # measured sample, not a syscall) — on a single-threaded event loop that
+    # means 200ms where this entire API can't service ANY other request,
+    # a start/stop click included. Every 5-second dashboard poll would cost
+    # you that. Offloaded to a thread so it costs this one request, not
+    # everyone using the API at that moment.
+    cpu_percent = await asyncio.to_thread(psutil.cpu_percent, 0.2)
+
     # Deliberately scoped to the media drive, not the whole host filesystem:
     # "is my library drive full" is the number that actually matters here,
     # and it doesn't require bind-mounting host / into this container just to
@@ -236,7 +272,7 @@ async def system_stats():
 
     return {
         "cpu_temp_c": cpu_temp_c,
-        "cpu_percent": psutil.cpu_percent(interval=0.2),
+        "cpu_percent": cpu_percent,
         "ram": {"total": vm.total, "used": vm.used, "percent": vm.percent},
         "disk_media": disk_media,
         "uptime_seconds": uptime_seconds,

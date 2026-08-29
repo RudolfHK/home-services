@@ -29,7 +29,14 @@
   }
 
   // ── System stats ────────────────────────────────────────────────────
+  let statsInFlight = false;
   async function refreshStats() {
+    // Guards against overlapping polls piling up if a request ever takes
+    // longer than POLL_MS to answer (a slow docker call, a hung request) —
+    // without this, setInterval keeps firing regardless of whether the
+    // previous call has resolved yet.
+    if (statsInFlight) return;
+    statsInFlight = true;
     try {
       const s = await fetchJSON("/api/system/stats");
       document.getElementById("stat-cpu").textContent = s.cpu_percent != null ? `${s.cpu_percent.toFixed(0)}%` : "–";
@@ -41,6 +48,8 @@
       document.getElementById("stat-uptime").textContent = formatUptime(s.uptime_seconds);
     } catch (err) {
       console.warn("stats refresh failed:", err);
+    } finally {
+      statsInFlight = false;
     }
   }
 
@@ -122,7 +131,14 @@
     return card;
   }
 
+  let servicesInFlight = false;
   async function refreshServices() {
+    // Same reasoning as statsInFlight above — and it matters more here,
+    // since this rebuilds the whole card list from scratch on every call;
+    // overlapping calls could interleave and render stale data on top of
+    // fresh data depending on which response lands last.
+    if (servicesInFlight) return;
+    servicesInFlight = true;
     try {
       const data = await fetchJSON("/api/services");
       const container = document.getElementById("services");
@@ -130,6 +146,8 @@
       data.services.forEach((s) => container.appendChild(buildCard(s)));
     } catch (err) {
       console.warn("services refresh failed:", err);
+    } finally {
+      servicesInFlight = false;
     }
   }
 
