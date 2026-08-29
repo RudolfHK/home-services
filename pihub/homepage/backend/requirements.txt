@@ -1,0 +1,10 @@
+fastapi==0.115.*
+uvicorn[standard]==0.32.*
+docker==7.1.*
+psutil==6.1.*
+httpx==0.27.*
+PyYAML==6.0.*
+# Imported directly (requests.exceptions) even though `docker` already
+# pulls it in transitively — declared explicitly since docker_monitor.py
+# depends on it directly.
+requests==2.32.*

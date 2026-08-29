@@ -1,0 +1,56 @@
+# homepage/docker-compose.yml — STANDALONE. Runs PiHub Homepage entirely on
+# its own, monitoring whatever Docker host and media path it's pointed at —
+# doesn't require the rest of PiHub.
+#
+# When homepage is deployed AS PART OF PiHub instead (the common case), it's
+# defined in ../docker-compose.yml under the "homepage" profile and reached
+# through the central nginx, not published on its own port — see that
+# file's comments. This one is for "I just want the dashboard" or testing
+# in isolation. Both point at the exact same ./backend and ./frontend code,
+# so there's one implementation either way.
+#
+# NOTE: no top-level `version:` key — it is obsolete in Compose v2.
+
+services:
+  homepage:
+    build: .
+    container_name: pihub-homepage-standalone
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    ports:
+      - "${HOMEPAGE_PORT:-80}:8080"
+
+    environment:
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      MEDIA_PATH: /media
+
+    volumes:
+      # See backend/docker_monitor.py's module docstring for exactly what
+      # "read_only" here does and doesn't protect against.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/host/proc:ro
+      - /sys/class/thermal:/host/thermal:ro
+      # Read-only, and shutil.disk_usage() never reads file contents —
+      # only filesystem-level stat — but this is still the broadest mount
+      # in this stack, present only because "boot drive space" was an
+      # explicit requirement. Comment it out if you'd rather not.
+      - /:/hostroot:ro
+      - ./config:/app/config
+      - ${MEDIA_ROOT:-/media/storage}:/media:ro
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      # No curl/wget in the base python:3.12-slim image — this avoids
+      # installing one just for a healthcheck.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

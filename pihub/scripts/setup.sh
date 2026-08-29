@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # First-time setup wizard: checks the basics, asks for your media path,
 # creates the folder layout, writes .env, pulls images, and brings the
-# whole stack (core + pitune + jellyfin) up.
+# whole stack (core + homepage + pitune + jellyfin) up.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -69,7 +69,7 @@ echo "Pulling images (this can take a while on a Pi's network/SD card)..."
 docker compose pull
 
 # ── 6. Start everything ─────────────────────────────────────────────────
-echo "Starting core services + PiTune + Jellyfin..."
+echo "Starting core services + homepage + PiTune + Jellyfin..."
 docker compose up -d
 
 # ── 7. Print the URL ─────────────────────────────────────────────────────
@@ -82,7 +82,7 @@ ip="${ip:-<this-pi>}"
 
 echo
 echo "== Done =="
-echo "Dashboard: http://$ip:$port/dashboard/"
+echo "Dashboard: http://$ip:$port/"
 echo
 echo "One-time manual steps still needed:"
 echo "  1. Open http://$ip:$navidrome_port/ and create your first Navidrome user."

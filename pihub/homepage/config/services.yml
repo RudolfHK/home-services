@@ -1,0 +1,58 @@
+# PiHub Homepage — service registry.
+#
+# Adding a future service (Immich, Pi-hole, Uptime Kuma, Mealie, ...) means
+# adding one block here — no code changes. This file is re-read on every
+# /api/services request, so editing it takes effect immediately; no restart
+# needed.
+#
+# Fields:
+#   name           Display name on the card.
+#   description    One line under the name.
+#   icon           A short icon key the frontend maps to an emoji/symbol
+#                  (see frontend/src/components/ServiceCard.js — unknown
+#                  keys just fall back to a generic dot, so a typo here
+#                  never breaks the card).
+#   containers     List of actual container names this product is made of.
+#                  ALL of them are queried and start/stop/restart acts on
+#                  ALL of them together — this is what lets PiTune show as
+#                  one card even though it's three containers.
+#   compose_service  Shorthand for containers: [<compose_service>] — use
+#                  this instead of `containers` for a single-container
+#                  product (see jellyfin below). If both are given,
+#                  `containers` wins.
+#   health_url     Where THIS backend reaches the service directly, over
+#                  the Docker compose network (a service name, not
+#                  "localhost" — "localhost" inside this container means
+#                  this container, not the Pi and not any other service).
+#                  Combined with health_endpoint for the actual HTTP check.
+#   health_endpoint  Path appended to health_url for the request.
+#   launch_url     What the "Open" button in the browser opens. A relative
+#                  path (e.g. /pitune/) goes through the same reverse proxy
+#                  the browser already used to reach this page; an absolute
+#                  http://<pi>:<port>/ is for a service published on its
+#                  own port instead.
+#   manageable     Whether to show Start/Stop/Restart buttons. Defaults to
+#                  true; set false for something you only want to watch.
+
+services:
+  pitune:
+    name: PiTune
+    description: Local music library + YouTube audio streaming
+    icon: music
+    containers: [navidrome, pitune-backend, pitune-frontend]
+    # Not /rest/ping.view: Subsonic's ping endpoint requires signed auth
+    # params, and this check has no user's credentials to sign with. "/"
+    # serves Navidrome's own SPA shell with no auth required — same check
+    # docker-compose.yml's own healthcheck already uses.
+    health_url: http://navidrome:4533
+    health_endpoint: /
+    launch_url: /pitune/
+
+  jellyfin:
+    name: Jellyfin
+    description: Movies & TV streaming
+    icon: film
+    compose_service: jellyfin
+    health_url: http://jellyfin:8096
+    health_endpoint: /health
+    launch_url: /jellyfin/

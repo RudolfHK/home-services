@@ -1,0 +1,21 @@
+# PiHub Homepage — UI preferences. Read once by the frontend at page load
+# (GET /api/config/settings), not polled — changes here need a browser
+# refresh, unlike services.yml.
+
+title: PiHub
+theme_default: dark          # dark | light — the user's own toggle (stored
+                              # in their browser) always overrides this
+services_poll_seconds: 12    # 10-15s per spec; services.yml is re-read
+                              # fresh on every one of these
+stats_poll_seconds: 5
+
+# Warning thresholds — shared with the same reasoning as home-drive's
+# monitoring (see home-drive/scripts/lib/stats.sh), tuned for a Pi 5 rather
+# than duplicated as a second, drifting copy of those numbers.
+thresholds:
+  cpu_temp_warn_c: 70
+  cpu_temp_crit_c: 80
+  disk_warn_percent: 75
+  disk_crit_percent: 90
+  ram_warn_percent: 85
+  ram_crit_percent: 95

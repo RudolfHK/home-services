@@ -1,10 +1,11 @@
-# docker-compose.yml — PiHub: dashboard + PiTune + Jellyfin, each independent.
+# docker-compose.yml — PiHub: homepage + PiTune + Jellyfin, each independent.
 #
-# Every service belongs to exactly one Compose profile — "core" (always on),
-# "pitune", or "jellyfin" — and COMPOSE_PROFILES in .env decides which
-# profiles a bare `docker compose up -d` brings up. The `pihub` CLI script
-# and the dashboard both operate at this same profile/product granularity
-# (start/stop "pitune" as a whole, not its three containers individually).
+# Every service belongs to exactly one Compose profile — "core" (nginx +
+# autoheal, always on), "homepage", "pitune", or "jellyfin" — and
+# COMPOSE_PROFILES in .env decides which profiles a bare `docker compose up
+# -d` brings up. The `pihub` CLI script and the homepage dashboard both
+# operate at this same profile/product granularity (start/stop "pitune" as a
+# whole, not its three containers individually).
 #
 # Independence is the point: nothing here uses `depends_on: condition:
 # service_healthy` across a product boundary. pitune-frontend depends on
@@ -61,43 +62,35 @@ services:
     labels:
       - "autoheal=true"
 
-  dashboard:
-    profiles: ["core"]
-    build: ./dashboard
-    container_name: pihub-dashboard
-    restart: unless-stopped
-    logging: *default-logging
+  # ══════════════════════════════════════════════════════════════════════
+  # Homepage — the unified status dashboard (replaces the old dashboard +
+  # management-api pair with one config-driven service; see homepage/README.md)
+  # ══════════════════════════════════════════════════════════════════════
 
-    security_opt:
-      - no-new-privileges:true
-
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    labels:
-      - "autoheal=true"
-
-  management-api:
-    profiles: ["core"]
-    build: ./management-api
-    container_name: pihub-management-api
+  homepage:
+    profiles: ["homepage"]
+    build: ./homepage
+    container_name: pihub-homepage
     restart: unless-stopped
     logging: *default-logging
 
     environment:
-      TZ: ${TZ}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       MEDIA_PATH: /media
 
     volumes:
-      # See management-api/app/main.py's module docstring for exactly what
-      # "read_only" here does and doesn't protect against.
+      # See homepage/backend/docker_monitor.py's module docstring for
+      # exactly what "read_only" here does and doesn't protect against.
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /proc:/host/proc:ro
       - /sys/class/thermal:/host/thermal:ro
+      # Read-only, and shutil.disk_usage() never reads file contents — only
+      # filesystem-level stat — but this is still the broadest mount in
+      # this stack, present only because "boot drive space" is an explicit
+      # feature (see homepage/backend/system_stats.py). Comment out both
+      # this line and BOOT_PATH's use if you'd rather not.
+      - /:/hostroot:ro
+      - ./homepage/config:/app/config
       - type: bind
         source: ${MEDIA_ROOT}
         target: /media
@@ -109,7 +102,8 @@ services:
       - no-new-privileges:true
 
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/api/health"]
+      # No curl/wget in the base python:3.12-slim image.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health')"]
       interval: 30s
       timeout: 5s
       retries: 3

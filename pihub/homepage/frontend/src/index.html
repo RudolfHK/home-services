@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>PiHub</title>
+  <link rel="stylesheet" href="styles/main.css">
+</head>
+<body>
+
+  <header class="topbar">
+    <h1 id="page-title">PiHub</h1>
+    <div class="topbar-right">
+      <div class="stats-bar" id="stats-bar">
+        <div class="stat"><span class="stat-label">CPU</span><span class="stat-value" id="stat-cpu">–</span></div>
+        <div class="stat"><span class="stat-label">Temp</span><span class="stat-value" id="stat-temp">–</span></div>
+        <div class="stat"><span class="stat-label">RAM</span><span class="stat-value" id="stat-ram">–</span></div>
+        <div class="stat"><span class="stat-label">Disk</span><span class="stat-value" id="stat-disk">–</span></div>
+        <div class="stat"><span class="stat-label">Uptime</span><span class="stat-value" id="stat-uptime">–</span></div>
+      </div>
+      <span class="clock" id="clock">--:--:--</span>
+      <button id="theme-toggle" title="Toggle dark/light">🌙</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="cards" id="services"></section>
+
+    <aside class="sidebar">
+      <h2>Health</h2>
+      <div class="bulk-actions">
+        <button id="start-all">Start all</button>
+        <button id="stop-all">Stop all</button>
+      </div>
+      <div id="alerts"></div>
+      <h2>Updates</h2>
+      <button id="check-updates">Check for updates</button>
+      <div class="updates-list" id="updates-list"></div>
+    </aside>
+  </main>
+
+  <div id="log-modal" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <span id="log-modal-title">Logs</span>
+        <button id="log-modal-close">✕</button>
+      </div>
+      <pre class="modal-body" id="log-modal-body"></pre>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -15,41 +15,43 @@ independent: stop or crash one, the others keep running.
                         ▼
               ┌─────────────────────────┐
               │   nginx (core, :80)      │  ← the only port for daily use
-              └───┬──────┬───────┬───────┘
-        /dashboard/  /pitune/    /jellyfin/
-           │            │            │
-           ▼            ▼            ▼
-    ┌───────────┐ ┌───────────────┐ ┌──────────┐
-    │ dashboard │ │ pitune-       │ │ jellyfin │
-    │           │ │ frontend      │ │  :8096   │
-    └─────┬─────┘ └──┬─────────┬──┘ └────┬─────┘
-          │ /api/     │         │        │
-          ▼           ▼         ▼        ▼
-   ┌──────────────┐ ┌────────┐ ┌──────┐ /media/{videos,movies,shows}
-   │management-api│ │navidrome│ │pitune-│  (read-only)
-   │ (docker API) │ │ :4533  │ │backend│
-   └──────────────┘ └───┬────┘ └───┬──┘
+              └───┬──────────┬───────┬───┘
+             /       /pitune/    /jellyfin/
+              │            │            │
+              ▼            ▼            ▼
+       ┌───────────┐ ┌───────────────┐ ┌──────────┐
+       │ homepage  │ │ pitune-       │ │ jellyfin │
+       │ (UI + API │ │ frontend      │ │  :8096   │
+       │  in one)  │ │               │ │          │
+       └─────┬─────┘ └──┬─────────┬──┘ └────┬─────┘
+             │ docker    │         │        │
+             │ socket    ▼         ▼        ▼
+             ▼    ┌────────┐ ┌──────┐ /media/{videos,movies,shows}
+       every       │navidrome│ │pitune-│  (read-only)
+       container's  │ :4533  │ │backend│
+       status/logs  └───┬────┘ └───┬──┘
                          │          │
                 /media/music   /media/downloads
                  (read-only)     (read-write)
 ```
 
-`core` (nginx, dashboard, management-api, autoheal) is always on. `pitune`
-(navidrome, pitune-backend, pitune-frontend) and `jellyfin` are independent
-Compose profiles — either can be stopped, crash, or be entirely absent from
-`.env`'s `COMPOSE_PROFILES` without affecting the other two groups.
+`core` (nginx, autoheal) is always on. `homepage`, `pitune` (navidrome,
+pitune-backend, pitune-frontend) and `jellyfin` are independent Compose
+profiles — any one of them can be stopped, crash, or be entirely absent
+from `.env`'s `COMPOSE_PROFILES` without affecting the others. See
+`homepage/README.md` for the dashboard itself.
 
 ## Why this design
 
-- **Product-level control, everywhere.** The dashboard, the `pihub` CLI, and
-  the management API all group containers into the same three units — core,
+- **Product-level control, everywhere.** The homepage dashboard and the
+  `pihub` CLI both group containers into the same units — core, homepage,
   pitune, jellyfin — never exposing raw container names to a user. "Start
   PiTune" always means the same three containers, consistently.
 - **No cross-product `depends_on`.** nginx starts without waiting on
-  anything; if Jellyfin is down, `/jellyfin/` 502s but the dashboard and
-  PiTune are unaffected. pitune-frontend depending on navidrome/pitune-backend
-  is PiTune's *own* internal wiring, not a PiHub-level dependency — see the
-  file header in `docker-compose.yml`.
+  anything; if Jellyfin is down, `/jellyfin/` 502s but the homepage
+  dashboard and PiTune are unaffected. pitune-frontend depending on
+  navidrome/pitune-backend is PiTune's *own* internal wiring, not a
+  PiHub-level dependency — see the file header in `docker-compose.yml`.
 - **State survives a reboot via Docker's own restart policy, not a trick.**
   `restart: unless-stopped` already means "come back after a host reboot,
   but stay off if a human explicitly stopped you." `pihub stop <x>` uses
@@ -63,8 +65,8 @@ Compose profiles — either can be stopped, crash, or be entirely absent from
   can then do its job.
 - **A missing media drive fails loudly, not silently.** Every bind mount from
   `MEDIA_ROOT` uses `create_host_path: false`, so a disconnected drive means
-  Navidrome/Jellyfin's containers simply don't start — and the dashboard
-  shows them as "not found", not a crash loop.
+  Navidrome/Jellyfin's containers simply don't start — and the homepage
+  dashboard shows them as "not found", not a crash loop.
 - **`/api/save` writes to a disposable `downloads/` folder, never the curated
   music library.** See `pitune/backend/app/main.py`. Add `downloads/` as a
   second Navidrome library from its own admin UI once you trust what's
@@ -76,13 +78,13 @@ Compose profiles — either can be stopped, crash, or be entirely absent from
   `autoheal` watching, that's a real restart loop on a perfectly healthy
   container. The healthcheck is a bare TCP connect instead, which doesn't
   care what path Jellyfin answers on.
-- **The management API never blocks on a slow Docker call.** `docker-py` is
-  fully synchronous; calling it directly from an `async def` route would
+- **The homepage dashboard never blocks on a slow Docker call.** `docker-py`
+  is fully synchronous; calling it directly from an `async def` route would
   freeze the *entire* API — including someone else's start/stop click —
   for as long as that one call takes. Every docker-py and `psutil` call in
-  `management-api/app/main.py` runs via `asyncio.to_thread`, and the
-  per-container status checks in `/api/services` run concurrently rather
-  than one container at a time.
+  `homepage/backend/` runs via `asyncio.to_thread`, and the per-container
+  status checks in `/api/services` run concurrently rather than one
+  container at a time. See `homepage/README.md` for the rest of its design.
 
 ## Prerequisites
 
@@ -179,7 +181,7 @@ bash scripts/setup.sh
 
 `setup.sh` checks Docker is installed, asks for your media drive path,
 creates the folder layout, writes `.env`, pulls every image, and starts
-core + PiTune + Jellyfin. It prints the dashboard URL when done.
+core + homepage + PiTune + Jellyfin. It prints the dashboard URL when done.
 
 Two one-time manual steps it can't do for you (both need each service's own
 admin UI, which PiHub doesn't reimplement):
@@ -199,6 +201,7 @@ Prefer running `pihub` from anywhere? `sudo ln -s "$(pwd)/pihub" /usr/local/bin/
 
 ```bash
 pihub status              # show every container's state, grouped by product
+pihub start homepage      # start just the dashboard
 pihub start pitune        # start just PiTune (all 3 of its containers)
 pihub stop jellyfin       # stop just Jellyfin
 pihub start all           # start everything, regardless of .env
@@ -211,7 +214,7 @@ pihub update              # pull latest images, recreate only what was running
 
 | Variable | Default | What it controls |
 |---|---|---|
-| `COMPOSE_PROFILES` | `core,pitune,jellyfin` | Which products a bare `docker compose up -d` brings up. Narrowing this doesn't limit `pihub` — see `pihub`'s `compose()` wrapper. |
+| `COMPOSE_PROFILES` | `core,homepage,pitune,jellyfin` | Which products a bare `docker compose up -d` brings up. Narrowing this doesn't limit `pihub` — see `pihub`'s `compose()` wrapper. |
 | `MEDIA_ROOT` | `/media/storage` | The external drive. `setup.sh` creates `music/ videos/ movies/ shows/ downloads/ photos/ backups/` under it. |
 | `NAVIDROME_DATA_PATH` / `JELLYFIN_CONFIG_PATH` | `./navidrome/data` / `./jellyfin/config` | Per-service config, deliberately off `MEDIA_ROOT` — a missing media drive must never take a service's own config down with it. |
 | `PIHUB_PORT` | `80` | The one port for daily use. |
@@ -263,8 +266,8 @@ directly to the internet.
 
 | Control | What it does |
 |---|---|
-| Docker socket mounted `read_only: true` into management-api | Stops the container from replacing/deleting the socket file — **not** a real permission boundary on what Docker API calls it can make (full socket access is root-equivalent). The real control is the next row. |
-| management-api's hardcoded `SERVICES` allow-list | Every start/stop/restart/logs call is resolved against a fixed set of container names baked into the image; the API never accepts a raw container name from a caller. See the module docstring in `management-api/app/main.py`. |
+| Docker socket mounted `read_only: true` into homepage | Stops the container from replacing/deleting the socket file — **not** a real permission boundary on what Docker API calls it can make (full socket access is root-equivalent). The real control is the next row. |
+| homepage's config-driven container allow-list | Every start/stop/restart/logs call is resolved against `homepage/config/services.yml`'s fixed container list; the API never accepts a raw container name from a caller. See `homepage/README.md`'s security model. |
 | Media library mounts are `read_only: true` everywhere except PiTune's `downloads/` | Navidrome and Jellyfin can't be tricked into writing into your library; the one writer (`pitune-backend`) is scoped to a disposable folder, not the library itself. |
 | `no-new-privileges` on every container | Standard defense-in-depth. |
 | Video-ID validation in pitune-backend | YouTube video IDs are checked against `^[A-Za-z0-9_-]{11}$` before reaching a `yt-dlp` command line, so a crafted ID can't be parsed as a CLI flag. |
@@ -300,11 +303,11 @@ symlink described above) — it needs `docker-compose.yml` next to it.
 
 ## Future services
 
-The registry pattern in `management-api/app/main.py`'s `SERVICES` list plus
-one profile block in `docker-compose.yml` is the whole integration surface —
-by design, adding Immich, Pi-hole, Uptime Kuma, Mealie or Home Assistant
-later means touching exactly those two places, never the dashboard, the CLI,
-or any existing product's config.
+Adding a service (Immich, Pi-hole, Uptime Kuma, Mealie, Home Assistant, ...)
+means two things: one entry in `homepage/config/services.yml` (no code
+change — see `homepage/README.md`) and one profile block in this file's
+`docker-compose.yml`. Nothing else — not the dashboard's code, not the CLI,
+not any existing product's config — needs to change.
 
 ## File structure
 
@@ -315,13 +318,12 @@ pihub/
 ├── pihub                    # CLI (see above)
 ├── nginx/
 │   └── nginx.conf           # central reverse proxy
-├── dashboard/                # status + start/stop/restart + system stats
+├── homepage/                 # unified dashboard + health monitor
 │   ├── Dockerfile
-│   └── src/
-├── management-api/           # Docker API wrapper behind the dashboard + CLI
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   └── app/main.py
+│   ├── config/services.yml   # ← add a service here
+│   ├── backend/
+│   └── frontend/
+│   (see homepage/README.md for its own full documentation)
 ├── pitune/
 │   ├── backend/              # yt-dlp search/stream API
 │   └── frontend/             # unified local+YouTube player UI

@@ -9,8 +9,8 @@
 #   pihub logs pitune         # tail logs for a product (or a raw container name)
 #   pihub update              # pull latest images, recreate only what was running
 #
-# Works at "product" granularity (core / pitune / jellyfin), matching the
-# dashboard and management-api — see docker-compose.yml's file header for why.
+# Works at "product" granularity (core / homepage / pitune / jellyfin),
+# matching the homepage dashboard — see docker-compose.yml's file header.
 set -euo pipefail
 
 # Resolves symlinks so `pihub` still finds its compose file when installed
@@ -20,15 +20,16 @@ cd "$SCRIPT_DIR"
 
 # Compose only resolves a profiled service at all — even when it's named
 # explicitly, e.g. `compose stop jellyfin` — if that service's profile is
-# currently active. Forcing all three active on every invocation here means
+# currently active. Forcing all four active on every invocation here means
 # this CLI always works regardless of what COMPOSE_PROFILES happens to be
 # set to in .env; the explicit service-name arguments at each call site are
 # what actually scope which containers get touched.
-compose() { docker compose --profile core --profile pitune --profile jellyfin "$@"; }
+compose() { docker compose --profile core --profile homepage --profile pitune --profile jellyfin "$@"; }
 
 services_for() {
   case "$1" in
-    core)     echo "nginx dashboard management-api autoheal" ;;
+    core)     echo "nginx autoheal" ;;
+    homepage) echo "homepage" ;;
     pitune)   echo "navidrome pitune-backend pitune-frontend" ;;
     jellyfin) echo "jellyfin" ;;
     *)        echo "" ;;
@@ -41,7 +42,7 @@ Usage: pihub <command> [target]
 
 Commands:
   status                 Show every service's container state
-  start   <target|all>   Start a product (core|pitune|jellyfin), or everything
+  start   <target|all>   Start a product (core|homepage|pitune|jellyfin), or everything
   stop    <target>       Stop a product
   restart <target>       Restart a product
   logs    <target>       Tail logs for a product or a single container name
@@ -50,7 +51,7 @@ EOF
 }
 
 cmd_status() {
-  for group in core pitune jellyfin; do
+  for group in core homepage pitune jellyfin; do
     echo "── $group ──"
     # shellcheck disable=SC2046
     compose ps $(services_for "$group") 2>/dev/null || true
@@ -59,7 +60,7 @@ cmd_status() {
 }
 
 cmd_start() {
-  local target="${1:?target required (core|pitune|jellyfin|all)}"
+  local target="${1:?target required (core|homepage|pitune|jellyfin|all)}"
   if [ "$target" = "all" ]; then
     # No explicit service names: starts everything in an active profile,
     # and compose() already forces all three profiles active.
