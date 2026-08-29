@@ -284,43 +284,53 @@ hd_render_transfer() {
   printf '\n'
 }
 
+# hd_render_activity PREFIX SLUG TITLE
+#
+# Renders one file tree's activity. PREFIX namespaces the metrics (act / dact),
+# SLUG the state files (files / drive) — see _hd_scan_tree.
 hd_render_activity() {
+  local prefix="${1:-act}" slug="${2:-files}" title="${3:-FILE ACTIVITY}"
   local state; state="$(hd_state_dir)"
+
   local since=""
-  if [[ -n "${HD[act_since]:-}" ]]; then
-    since=" since $(hd_ago "${HD[act_since]}")"
-  fi
-  hd_rule "FILE ACTIVITY${since}"
+  [[ -n "${HD["${prefix}_since"]:-}" ]] && since=" since $(hd_ago "${HD["${prefix}_since"]}")"
+  hd_rule "${title}${since}"
 
-  if [[ "${HD[act_status]:-}" == "unavailable" ]]; then
-    printf '  %s%s is not readable%s\n\n' "$C_DIM" "${HD[act_root]:-?}" "$C_RESET"
-    return 0
-  fi
+  case "${HD["${prefix}_status"]:-}" in
+    absent)
+      printf '  %sthe drive is not installed — see docs/DRIVE.md%s\n\n' "$C_DIM" "$C_RESET"
+      return 0 ;;
+    unavailable)
+      printf '  %s%s is not readable%s\n\n' "$C_DIM" "${HD["${prefix}_root"]:-?}" "$C_RESET"
+      return 0 ;;
+  esac
 
-  printf '  %s files · %s' "$(hd_num "${HD[act_count]:-0}")" "$(hd_bytes "${HD[act_bytes]:-0}")"
-  case "${HD[act_diff]:-}" in
+  printf '  %s files · %s' \
+    "$(hd_num "${HD["${prefix}_count"]:-0}")" "$(hd_bytes "${HD["${prefix}_bytes"]:-0}")"
+  case "${HD["${prefix}_diff"]:-}" in
     ok)
       printf '   %s+%s new%s  %s~%s changed%s  %s-%s deleted%s' \
-        "$C_GREEN" "${HD[act_added]:-0}" "$C_RESET" \
-        "$C_CYAN" "${HD[act_modified]:-0}" "$C_RESET" \
-        "$C_YELLOW" "${HD[act_deleted]:-0}" "$C_RESET"
+        "$C_GREEN" "${HD["${prefix}_added"]:-0}" "$C_RESET" \
+        "$C_CYAN" "${HD["${prefix}_modified"]:-0}" "$C_RESET" \
+        "$C_YELLOW" "${HD["${prefix}_deleted"]:-0}" "$C_RESET"
       ;;
     baseline) printf '   %s(first scan — change tracking starts now)%s' "$C_DIM" "$C_RESET" ;;
     skipped)  printf '   %s(too many files for change tracking)%s' "$C_DIM" "$C_RESET" ;;
   esac
-  [[ "${HD[act_status]:-}" == "cached" ]] && printf '   %s[cached]%s' "$C_DIM" "$C_RESET"
+  [[ "${HD["${prefix}_status"]:-}" == "cached" ]] && printf '   %s[cached]%s' "$C_DIM" "$C_RESET"
   printf '\n'
 
   # Most recently written files: what was last edited or uploaded.
-  local root="${HD[act_root]:-}"
+  local root="${HD["${prefix}_root"]:-}"
   local path_w=$(( HD_W - 32 ))
   [[ "$path_w" -lt 20 ]] && path_w=20
   local mtime size path rel marker mcolor stamp shown=0
-  if [[ -r "$state/recent.tsv" ]]; then
+  if [[ -r "$state/${slug}-recent.tsv" ]]; then
     while IFS=$'\t' read -r mtime size path; do
       [[ -z "$path" ]] && continue
       marker="~"; mcolor="$C_CYAN"
-      if [[ -s "$state/added.txt" ]] && grep -Fxq -- "$path" "$state/added.txt" 2>/dev/null; then
+      if [[ -s "$state/${slug}-added.txt" ]] \
+         && grep -Fxq -- "$path" "$state/${slug}-added.txt" 2>/dev/null; then
         marker="+"; mcolor="$C_GREEN"
       fi
       stamp="$(date -d "@$mtime" '+%m-%d %H:%M' 2>/dev/null || echo '     ')"
@@ -329,24 +339,24 @@ hd_render_activity() {
         "$mcolor" "$marker" "$C_RESET" "$C_DIM" "$stamp" "$C_RESET" \
         "$(hd_bytes "$size")" "$(hd_shortpath "$rel" "$path_w")"
       shown=$(( shown + 1 ))
-    done < "$state/recent.tsv"
+    done < "$state/${slug}-recent.tsv"
   fi
 
   # Deletions have no mtime to sort by — they only exist as a manifest diff.
-  if [[ -s "$state/deleted.txt" ]]; then
-    local count=0
+  if [[ -s "$state/${slug}-deleted.txt" ]]; then
+    local count=0 limit="${HEALTH_DELETED_SHOWN:-3}"
     while IFS= read -r path; do
-      [[ "$count" -ge "${HEALTH_DELETED_SHOWN:-3}" ]] && break
+      [[ "$count" -ge "$limit" ]] && break
       rel="${path#"$root"/}"
       printf '  %s-%s %s%s%s  %9s  %s\n' \
-        "$C_YELLOW" "$C_RESET" "$C_DIM" "     " "$C_RESET" "" \
+        "$C_YELLOW" "$C_RESET" "$C_DIM" "           " "$C_RESET" "" \
         "$(hd_shortpath "$rel" "$path_w")"
       count=$(( count + 1 ))
       shown=$(( shown + 1 ))
-    done < "$state/deleted.txt"
-    if [[ "${HD[act_deleted]:-0}" -gt "${HEALTH_DELETED_SHOWN:-3}" ]]; then
+    done < "$state/${slug}-deleted.txt"
+    if [[ "${HD["${prefix}_deleted"]:-0}" -gt "$limit" ]]; then
       printf '  %s  … and %s more deleted%s\n' \
-        "$C_DIM" "$(( HD[act_deleted] - ${HEALTH_DELETED_SHOWN:-3} ))" "$C_RESET"
+        "$C_DIM" "$(( ${HD["${prefix}_deleted"]} - limit ))" "$C_RESET"
     fi
   fi
 
@@ -354,19 +364,49 @@ hd_render_activity() {
   printf '\n'
 }
 
+# hd_render_backup [SUBSYSTEM]
+#
+# One nightly archive covers the whole stack, so the panel is the same either
+# way; SUBSYSTEM (drive | obsidian) adds the line that actually matters to the
+# thing you asked about — what of it is really in there.
 hd_render_backup() {
+  local subsystem="${1:-}"
   hd_rule "BACKUP"
+
   if [[ -z "${HD[bk_latest]:-}" ]]; then
-    printf '  %s%s%s no archives in %s\n\n' \
+    printf '  %s%s%s no archives in %s\n' \
       "$C_YELLOW" "$G_WARN" "$C_RESET" "${HD[bk_dest]:-?}"
-    return 0
+  else
+    printf '  %s%s%s %s  %s  %s  %s%s kept · %s total%s\n' \
+      "$(hd_level_color "${HD[bk_level]:-}")" "$(hd_level_glyph "${HD[bk_level]:-}")" "$C_RESET" \
+      "${HD[bk_latest]}" \
+      "$(hd_ago "${HD[bk_latest_epoch]:-}")" \
+      "$(hd_bytes "${HD[bk_size]:-0}")" \
+      "$C_DIM" "${HD[bk_count]:-0}" "$(hd_bytes "${HD[bk_total]:-0}")" "$C_RESET"
   fi
-  printf '  %s%s%s %s  %s  %s  %s%s kept · %s total%s\n\n' \
-    "$(hd_level_color "${HD[bk_level]:-}")" "$(hd_level_glyph "${HD[bk_level]:-}")" "$C_RESET" \
-    "${HD[bk_latest]}" \
-    "$(hd_ago "${HD[bk_latest_epoch]:-}")" \
-    "$(hd_bytes "${HD[bk_size]:-0}")" \
-    "$C_DIM" "${HD[bk_count]:-0}" "$(hd_bytes "${HD[bk_total]:-0}")" "$C_RESET"
+
+  case "$subsystem" in
+    drive)
+      if [[ "${BACKUP_INCLUDE_NEXTCLOUD_DATA:-false}" == "true" ]]; then
+        printf '         %sdrive: database, config and every user file%s\n' "$C_DIM" "$C_RESET"
+      else
+        printf '         %sdrive: database and config only — user files are NOT in the archive%s\n' \
+          "$C_YELLOW" "$C_RESET"
+        printf '         %sset BACKUP_INCLUDE_NEXTCLOUD_DATA=true, or mirror them with rclone%s\n' \
+          "$C_DIM" "$C_RESET"
+      fi
+      ;;
+    obsidian)
+      printf '         %svault: every CouchDB database is dumped in full%s\n' "$C_DIM" "$C_RESET"
+      if [[ "${BACKUP_INCLUDE_FILES:-false}" == "true" ]]; then
+        printf '         %sfiles: the FileBrowser tree is included%s\n' "$C_DIM" "$C_RESET"
+      else
+        printf '         %sfiles: the FileBrowser tree is NOT in the archive (BACKUP_INCLUDE_FILES=false)%s\n' \
+          "$C_YELLOW" "$C_RESET"
+      fi
+      ;;
+  esac
+  printf '\n'
 }
 
 hd_render_issues() {
@@ -383,6 +423,18 @@ hd_render_issues() {
 }
 
 # ── Whole screens ────────────────────────────────────────────────────────────
+# The base sections are always drawn: they describe the machine, and the machine
+# is the same machine whichever subsystem you came to look at.
+#
+# File activity, backup and the issue list are per-subsystem, selected by the
+# caller through these switches (health-dashboard.sh sets them from --drive /
+# --obsidian). Default is base-only, which is the fast view: no tree walk.
+HD_SHOW_ACTIVITY_FILES="${HD_SHOW_ACTIVITY_FILES:-0}"
+HD_SHOW_ACTIVITY_DRIVE="${HD_SHOW_ACTIVITY_DRIVE:-0}"
+HD_SHOW_BACKUP="${HD_SHOW_BACKUP:-0}"
+HD_SHOW_ISSUES="${HD_SHOW_ISSUES:-0}"
+HD_BACKUP_SUBSYSTEM="${HD_BACKUP_SUBSYSTEM:-}"
+
 hd_render_full() {
   HD_W="$(hd_term_width)"
   hd_render_header
@@ -390,9 +442,27 @@ hd_render_full() {
   hd_render_storage
   hd_render_pi
   hd_render_transfer
-  hd_render_activity
-  hd_render_backup
-  hd_render_issues
+
+  [[ "$HD_SHOW_ACTIVITY_FILES" == "1" ]] && \
+    hd_render_activity act files "FILE ACTIVITY (obsidian / filebrowser)"
+  [[ "$HD_SHOW_ACTIVITY_DRIVE" == "1" ]] && \
+    hd_render_activity dact drive "FILE ACTIVITY (drive)"
+
+  [[ "$HD_SHOW_BACKUP" == "1" ]] && hd_render_backup "$HD_BACKUP_SUBSYSTEM"
+
+  if [[ "$HD_SHOW_ISSUES" == "1" ]]; then
+    hd_render_issues
+  elif [[ "${#HD_ISSUES[@]}" -gt 0 ]]; then
+    # Never hide the fact that something is wrong. The base sections already
+    # colour a failed container or an unmounted drive, but an itemised list that
+    # silently disappears with the default flags would be a trap.
+    local worst_color
+    worst_color="$(hd_level_color "$HD_OVERALL")"
+    printf '%s%s %s issue(s) outstanding%s — %s--drive%s or %s--obsidian%s to itemise them\n\n' \
+      "$worst_color" "$(hd_level_glyph "$HD_OVERALL")" "${#HD_ISSUES[@]}" "$C_RESET" \
+      "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET"
+  fi
+  return 0
 }
 
 # Twelve lines for a small LCD HAT or a five-second glance from across the room.
@@ -428,9 +498,20 @@ hd_render_compact() {
   printf 'cpu      %s %s%%\n' "$(hd_bar "${HD[cpu_pct]:-0}" 14 "${HD[cpu_level]:-}")" "${HD[cpu_pct]:-?}"
   printf 'ram      %s %s%%\n' "$(hd_bar "${HD[mem_pct]:-0}" 14 "${HD[mem_level]:-}")" "${HD[mem_pct]:-?}"
   printf 'net      down %s  up %s\n' "$(hd_rate "${HD[net_rx_rate]:-0}")" "$(hd_rate "${HD[net_tx_rate]:-0}")"
-  printf 'files    %s · %s' "$(hd_num "${HD[act_count]:-0}")" "$(hd_bytes "${HD[act_bytes]:-0}")"
-  [[ "${HD[act_diff]:-}" == "ok" ]] && printf '  +%s ~%s -%s' "${HD[act_added]:-0}" "${HD[act_modified]:-0}" "${HD[act_deleted]:-0}"
-  printf '\n'
+  # One line per tree that was actually scanned. Printing "files 0 · 0 B" when
+  # the scan was skipped would read as an empty drive rather than as no data.
+  if [[ -n "${HD[act_count]:-}" ]]; then
+    printf 'files    %s · %s' "$(hd_num "${HD[act_count]}")" "$(hd_bytes "${HD[act_bytes]:-0}")"
+    [[ "${HD[act_diff]:-}" == "ok" ]] && \
+      printf '  +%s ~%s -%s' "${HD[act_added]:-0}" "${HD[act_modified]:-0}" "${HD[act_deleted]:-0}"
+    printf '\n'
+  fi
+  if [[ -n "${HD[dact_count]:-}" ]]; then
+    printf 'drive    %s · %s' "$(hd_num "${HD[dact_count]}")" "$(hd_bytes "${HD[dact_bytes]:-0}")"
+    [[ "${HD[dact_diff]:-}" == "ok" ]] && \
+      printf '  +%s ~%s -%s' "${HD[dact_added]:-0}" "${HD[dact_modified]:-0}" "${HD[dact_deleted]:-0}"
+    printf '\n'
+  fi
   printf 'backup   %s\n' "$( [[ -n "${HD[bk_latest]:-}" ]] && hd_ago "${HD[bk_latest_epoch]}" || printf 'none' )"
 
   if [[ "${#HD_ISSUES[@]}" -gt 0 ]]; then
@@ -472,6 +553,9 @@ hd_render_log() {
     "backup: ${HD[bk_latest]} is ${HD[bk_age_h]}h old"
   if [[ "${HD[act_diff]:-}" == "ok" ]]; then
     _hd_log_line ok "files: ${HD[act_count]} files, $(hd_bytes "${HD[act_bytes]:-0}"), +${HD[act_added]} ~${HD[act_modified]} -${HD[act_deleted]}"
+  fi
+  if [[ "${HD[dact_diff]:-}" == "ok" ]]; then
+    _hd_log_line ok "drive: ${HD[dact_count]} files, $(hd_bytes "${HD[dact_bytes]:-0}"), +${HD[dact_added]} ~${HD[dact_modified]} -${HD[dact_deleted]}"
   fi
   [[ -n "${HD[net_rx_rate]:-}" ]] && _hd_log_line ok \
     "network: down $(hd_rate "${HD[net_rx_rate]}"), up $(hd_rate "${HD[net_tx_rate]:-0}") averaged over ${HD[rate_window]:-?}"

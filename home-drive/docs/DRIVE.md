@@ -203,7 +203,15 @@ occ config:list system           # effective configuration
 Health monitoring already covers the drive — [health-monitor.sh](../scripts/health-monitor.sh)
 picks up the five containers automatically when they exist, and
 `bash scripts/health-dashboard.sh` shows a `drive` line with the version, plus the
-Nextcloud share of the disk usage breakdown. It alerts on three states a *running* container
+Nextcloud share of the disk usage breakdown. For what actually moved on the drive:
+
+```bash
+homedrive-status --drive        # files added / changed / deleted, and the backup
+homedrive-status --drive --scan # force a fresh walk instead of the cached one
+```
+
+That walks `data/<user>/files` from inside the container — the host cannot read it — and
+skips versions and the trash, which would otherwise double-count every edit. It alerts on three states a *running* container
 will not tell you about: install unfinished, stuck in maintenance mode, and a pending
 database upgrade after an image pull.
 

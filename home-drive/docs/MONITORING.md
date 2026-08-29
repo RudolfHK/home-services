@@ -6,8 +6,8 @@ the drive is doing" are different jobs with opposite requirements.
 | | `health-monitor.sh` | `health-dashboard.sh` |
 |---|---|---|
 | Runs | Automatically, every 15 min | When you ask |
-| Output | Silence, unless there is a problem | A full status screen |
-| Costs | Cheap; safe to run unattended | Samples for a second, walks the file tree |
+| Output | Silence, unless there is a problem | A status screen; sections chosen by flag |
+| Costs | Cheap; safe to run unattended | ~1s for the base view; walks a file tree only when asked |
 | Alerts | ntfy, with repeat suppression | Never |
 | Exit code | 0 ok / 1 warn / 2 fail | Always 0 |
 | Needs the repo | No — installed as `homedrive-health` | No — installed as `homedrive-status` |
@@ -52,7 +52,10 @@ that makes deletion detection work.
 ## Daily use
 
 ```bash
-homedrive-status              # the full screen, once
+homedrive-status              # base view: storage, Pi, transfer, services
+homedrive-status --drive      # + Nextcloud file activity, backup, issue list
+homedrive-status --obsidian   # + the same for the FileBrowser / Obsidian tree
+homedrive-status --all        # both
 homedrive-status --watch      # live, refreshes every 5s, Ctrl-C to leave
 homedrive-status --scan       # force a fresh file scan instead of the cached one
 homedrive-status --compact    # one screenful of essentials
@@ -66,6 +69,28 @@ journalctl -u homedrive-health -n 50
 
 From a checkout, the same scripts are `bash scripts/health-dashboard.sh` and
 `bash scripts/health-monitor.sh`.
+
+### Base view versus subsystem views
+
+**Storage, the Pi, transfer and the services are always shown.** They describe the machine,
+and it is the same machine whichever subsystem you came to look at.
+
+**File activity, backup and the itemised issue list are per-subsystem**, behind `--drive`
+and `--obsidian`. This is not only about screen space: walking a file tree's metadata is by
+far the most expensive thing the dashboard does, and the flagless view skips both trees and
+returns in about a second. Ask for a subsystem and only that tree is walked.
+
+Nothing is hidden dangerously. When the issue list is off and something is wrong, the base
+view still ends with a line like:
+
+```
+✖ 3 issue(s) outstanding — --drive or --obsidian to itemise them
+```
+
+and a failed container or an unmounted drive is already coloured red in the sections above.
+
+The **monitor** ignores all of this and always scans both trees: noticing that fifty files
+vanished is one of the things it exists for.
 
 ---
 
@@ -100,6 +125,20 @@ and are what the sparklines are built from.
 was **added, modified and deleted** since the last check. Deletions are the reason this
 keeps a manifest: `find` can list what exists, never what stopped existing. A mass deletion
 raises a warning while the deleted files are still inside the backup retention window.
+
+Two trees are tracked independently, with the same logic and separate state:
+
+| Flag | Tree | Walked |
+|------|------|--------|
+| `--obsidian` | `$DATA_PATH/files` — FileBrowser and anything you put there | on the host |
+| `--drive` | Nextcloud's `data/<user>/files` | inside the container |
+
+The drive's tree cannot be walked from the host at all: it is mode 750 owned by the web
+user, so the account running the health check would get nothing but permission errors.
+Only `data/<user>/files` is counted — `files_versions`, `files_trashbin` and `appdata_*`
+live under the same root, and including them would report every single edit twice (once as
+the file, once as the version it just created) and every deletion as an addition in the
+trash.
 
 **Sync** — CouchDB document count, database size, and the change in `update_seq` since the
 last check. That last number is the honest answer to "is anything actually syncing?" — the
@@ -206,9 +245,10 @@ Everything lives in `/var/lib/homedrive` (override with `HEALTH_STATE_DIR`):
 | `counters.env` | Last run's network/disk/CPU counters — the basis of every rate |
 | `history.csv` | Rolling samples for the sparklines (capped at 240 points) |
 | `live.csv` | Same, for `--watch` sessions, kept separate so 5-second samples do not pollute the long-term history |
-| `files-manifest.tsv` | Path, mtime and size of every file at the last scan |
-| `added.txt` `deleted.txt` `modified.txt` | The last diff |
-| `recent.tsv` | Most recently written files |
+| `files-manifest.tsv` `drive-manifest.tsv` | Path, mtime and size of every file at the last scan, one per tree |
+| `files-added.txt` `files-deleted.txt` `files-modified.txt` | The last diff of the FileBrowser tree |
+| `drive-added.txt` `drive-deleted.txt` `drive-modified.txt` | The same for the Nextcloud tree |
+| `files-recent.tsv` `drive-recent.tsv` | Most recently written files |
 | `status.json` | Full metric set from the last unattended run |
 | `status.txt` | One-line summary (`homedrive-health --status` prints this) |
 | `alert.env` | Which alert was last sent, and when |

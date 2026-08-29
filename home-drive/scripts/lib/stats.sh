@@ -480,122 +480,202 @@ _hd_collect_dirs() {
 }
 
 # ── File activity ────────────────────────────────────────────────────────────
-# One find pass produces everything: the recent-edit list, the total file count
-# and size, and the manifest whose diff against the previous run is the only way
-# to see DELETED files — find can list what exists, never what stopped existing.
-hd_collect_activity() {
-  local force="${1:-0}"
-  local state; state="$(hd_state_dir)"
-  local root="${DATA_PATH:-/mnt/data}/files"
-  local manifest="$state/files-manifest.tsv"
-  local cache="$state/activity.env"
+# One pass over a tree's metadata produces everything: the recent-edit list, the
+# total file count and size, and the manifest whose diff against the previous
+# run is the only way to see DELETED files — find can list what exists, never
+# what stopped existing.
+#
+# Two trees are tracked, with identical logic and separate state:
+#
+#   act_*   ${DATA_PATH}/files          FileBrowser / Obsidian side, walked on the host
+#   dact_*  Nextcloud's data directory  walked inside the container
+#
+# The drive tree cannot be walked from the host: it is mode 750 owned by the web
+# user, so the account running the health check gets nothing but permission
+# errors. The same reason `_hd_collect_dirs` measures it with `docker exec du`.
 
-  HD[act_root]="$root"
-
-  if [[ ! -d "$root" ]]; then
-    HD[act_status]="unavailable"
-    return 0
+# `timeout` is an external program: it can run `find`, but it cannot run a shell
+# function. Wrapping the lister call in _hd_scan_tree therefore silently
+# produced zero files. The time box belongs here, around the actual command.
+_hd_timeout() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$HD_SCAN_TIMEOUT" "$@"
+  else
+    "$@"
   fi
+}
+
+# Listers. Each emits "mtime<TAB>size<TAB>path", one line per file, and returns
+# 124 when the time box expired.
+_hd_list_tree_host() {
+  _hd_timeout find "$1" -xdev -type f -printf '%T@	%s	%p
+' 2>/dev/null
+}
+
+_hd_list_tree_drive() {
+  # Only data/<user>/files. Nextcloud also keeps files_versions, files_trashbin,
+  # uploads and appdata_* under the same root: counting those would report every
+  # single edit twice (once as the file, once as the version it just created)
+  # and every deletion as an addition in the trash.
+  #
+  # This needs GNU find for -printf, which the Debian-based nextcloud image has;
+  # the Alpine variant ships busybox find, which does not. One more reason the
+  # compose file pins the Debian image.
+  #
+  # No pipe here on purpose: piping through sed to prettify the paths would make
+  # $? the status of sed, and the timeout's 124 would never be seen. Paths stay
+  # absolute and the display root strips the prefix instead.
+  _hd_timeout docker exec homedrive-nextcloud-app     sh -c 'find /var/www/html/data/*/files -xdev -type f -printf "%T@	%s	%p
+" 2>/dev/null'     2>/dev/null
+}
+
+# _hd_scan_tree PREFIX SLUG ROOT LISTER FORCE
+#
+# PREFIX namespaces the HD keys, SLUG namespaces the state files, ROOT is the
+# path prefix stripped when displaying, LISTER is the function above.
+_hd_scan_tree() {
+  local prefix="$1" slug="$2" root="$3" lister="$4" force="${5:-0}"
+  local state; state="$(hd_state_dir)"
+  local manifest="$state/${slug}-manifest.tsv"
+  local cache="$state/${slug}-activity.env"
+
+  HD["${prefix}_root"]="$root"
+  HD["${prefix}_slug"]="$slug"
 
   # Reuse the cached result when it is fresh enough. A full metadata walk of a
-  # multi-terabyte drive is not something to do on every dashboard refresh.
+  # multi-terabyte tree is not something to do on every dashboard refresh.
   if [[ "$force" != "1" && -r "$cache" ]]; then
     local age_min=$(( ( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0) ) / 60 ))
     if [[ "$age_min" -lt "$HD_SCAN_INTERVAL_MIN" ]]; then
-      _hd_activity_load "$cache"
-      HD[act_status]="cached"
+      _hd_activity_load "$prefix" "$cache"
+      HD["${prefix}_status"]="cached"
       return 0
     fi
   fi
 
-  local scan; scan="$(mktemp "${TMPDIR:-/tmp}/homedrive-scan.XXXXXX")" || { HD[act_status]="error"; return 0; }
+  local scan
+  scan="$(mktemp "${TMPDIR:-/tmp}/homedrive-scan.XXXXXX")" || {
+    HD["${prefix}_status"]="error"; return 0; }
   local timed_out=0
 
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$HD_SCAN_TIMEOUT" find "$root" -xdev -type f -printf '%T@\t%s\t%p\n' > "$scan" 2>/dev/null || timed_out=$?
-  else
-    find "$root" -xdev -type f -printf '%T@\t%s\t%p\n' > "$scan" 2>/dev/null || true
-  fi
+  # The lister time-boxes itself and returns 124 if it ran out.
+  "$lister" "$root" > "$scan" 2>/dev/null || timed_out=$?
 
   if [[ "$timed_out" == "124" ]]; then
-    HD[act_status]="timeout"
-    hd_issue warn activity "File scan exceeded ${HD_SCAN_TIMEOUT}s — figures are partial"
+    HD["${prefix}_status"]="timeout"
+    hd_issue warn activity "Scan of $root exceeded ${HD_SCAN_TIMEOUT}s — figures are partial"
   else
-    HD[act_status]="fresh"
+    HD["${prefix}_status"]="fresh"
   fi
 
-  HD[act_count]="$(wc -l < "$scan" | tr -d ' ')"
-  HD[act_bytes]="$(awk -F'\t' '{s += $2} END {printf "%d", s}' "$scan")"
-  HD[dir_files_bytes]="${HD[act_bytes]}"
+  HD["${prefix}_count"]="$(wc -l < "$scan" | tr -d ' ')"
+  HD["${prefix}_bytes"]="$(awk -F'\t' '{s += $2} END {printf "%d", s}' "$scan")"
+  # The storage breakdown reads the FileBrowser tree's size from here rather
+  # than paying for a second walk.
+  [[ "$prefix" == "act" ]] && HD[dir_files_bytes]="${HD[act_bytes]}"
 
   # Most recently written files — "what was last edited or uploaded".
   awk -F'\t' '{printf "%d\t%s\t%s\n", $1, $2, $3}' "$scan" \
-    | sort -rn -k1,1 | head -n "${HEALTH_RECENT_COUNT:-8}" > "$state/recent.tsv" 2>/dev/null || true
+    | sort -rn -k1,1 | head -n "${HEALTH_RECENT_COUNT:-8}" \
+    > "$state/${slug}-recent.tsv" 2>/dev/null || true
 
   # Manifest diff → added / deleted / modified since the previous scan.
   # LC_ALL=C throughout: comm requires both inputs in the same collation, and a
   # locale change between runs would otherwise report the whole tree as churned.
-  local new_manifest="$state/files-manifest.new"
+  local new_manifest="$state/${slug}-manifest.new"
   awk -F'\t' '{printf "%s\t%d\t%s\n", $3, $1, $2}' "$scan" \
     | LC_ALL=C sort -t$'\t' -k1,1 > "$new_manifest" 2>/dev/null || true
 
-  : > "$state/added.txt"; : > "$state/deleted.txt"; : > "$state/modified.txt"
-  HD[act_added]=0; HD[act_deleted]=0; HD[act_modified]=0
-  HD[act_diff]="none"
+  : > "$state/${slug}-added.txt"
+  : > "$state/${slug}-deleted.txt"
+  : > "$state/${slug}-modified.txt"
+  HD["${prefix}_added"]=0; HD["${prefix}_deleted"]=0; HD["${prefix}_modified"]=0
+  HD["${prefix}_diff"]="none"
 
-  if [[ "${HD[act_count]:-0}" -gt "$HD_SCAN_MAX_FILES" ]]; then
-    HD[act_diff]="skipped"
-    hd_issue warn activity "More than $HD_SCAN_MAX_FILES files — change tracking disabled (raise HEALTH_SCAN_MAX_FILES)"
+  if [[ "${HD["${prefix}_count"]:-0}" -gt "$HD_SCAN_MAX_FILES" ]]; then
+    HD["${prefix}_diff"]="skipped"
+    hd_issue warn activity "More than $HD_SCAN_MAX_FILES files in $root — change tracking disabled (raise HEALTH_SCAN_MAX_FILES)"
   elif [[ -r "$manifest" ]]; then
-    cut -f1 "$manifest" > "$state/.paths.prev"
-    cut -f1 "$new_manifest" > "$state/.paths.new"
-    LC_ALL=C comm -13 "$state/.paths.prev" "$state/.paths.new" > "$state/added.txt" 2>/dev/null || true
-    LC_ALL=C comm -23 "$state/.paths.prev" "$state/.paths.new" > "$state/deleted.txt" 2>/dev/null || true
+    cut -f1 "$manifest" > "$state/.paths.prev.$slug"
+    cut -f1 "$new_manifest" > "$state/.paths.new.$slug"
+    LC_ALL=C comm -13 "$state/.paths.prev.$slug" "$state/.paths.new.$slug" \
+      > "$state/${slug}-added.txt" 2>/dev/null || true
+    LC_ALL=C comm -23 "$state/.paths.prev.$slug" "$state/.paths.new.$slug" \
+      > "$state/${slug}-deleted.txt" 2>/dev/null || true
     awk -F'\t' 'NR==FNR {a[$1] = $2 "\t" $3; next} ($1 in a) && a[$1] != $2 "\t" $3 {print $1}' \
-      "$manifest" "$new_manifest" > "$state/modified.txt" 2>/dev/null || true
-    rm -f "$state/.paths.prev" "$state/.paths.new"
-    HD[act_added]="$(wc -l < "$state/added.txt" | tr -d ' ')"
-    HD[act_deleted]="$(wc -l < "$state/deleted.txt" | tr -d ' ')"
-    HD[act_modified]="$(wc -l < "$state/modified.txt" | tr -d ' ')"
-    HD[act_diff]="ok"
-    HD[act_since]="$(stat -c %Y "$manifest" 2>/dev/null || echo '')"
+      "$manifest" "$new_manifest" > "$state/${slug}-modified.txt" 2>/dev/null || true
+    rm -f "$state/.paths.prev.$slug" "$state/.paths.new.$slug"
+    HD["${prefix}_added"]="$(wc -l < "$state/${slug}-added.txt" | tr -d ' ')"
+    HD["${prefix}_deleted"]="$(wc -l < "$state/${slug}-deleted.txt" | tr -d ' ')"
+    HD["${prefix}_modified"]="$(wc -l < "$state/${slug}-modified.txt" | tr -d ' ')"
+    HD["${prefix}_diff"]="ok"
+    HD["${prefix}_since"]="$(stat -c %Y "$manifest" 2>/dev/null || echo '')"
 
     # A mass deletion is worth knowing about before the next backup rotates the
     # last copy of those files out of retention.
     local del_warn="${HEALTH_DELETE_WARN:-50}"
-    if [[ "${HD[act_deleted]}" -ge "$del_warn" ]]; then
-      hd_issue warn activity "${HD[act_deleted]} files disappeared from $root since the last check"
+    if [[ "${HD["${prefix}_deleted"]}" -ge "$del_warn" ]]; then
+      hd_issue warn activity "${HD["${prefix}_deleted"]} files disappeared from $root since the last check"
     fi
   else
-    HD[act_diff]="baseline"
+    HD["${prefix}_diff"]="baseline"
   fi
 
   mv -f "$new_manifest" "$manifest" 2>/dev/null || true
   rm -f "$scan"
 
-  HD[act_scanned_at]="${HD[now]}"
-  _hd_activity_save "$cache"
+  HD["${prefix}_scanned_at"]="${HD[now]}"
+  _hd_activity_save "$prefix" "$cache"
 }
 
 _hd_activity_save() {
-  local file="$1" key
+  local prefix="$1" file="$2" key
   {
-    for key in act_status act_count act_bytes act_added act_deleted act_modified act_diff act_since dir_files_bytes; do
-      printf '%s=%s\n' "$key" "${HD[$key]:-}"
+    for key in status count bytes added deleted modified diff since; do
+      printf '%s_%s=%s\n' "$prefix" "$key" "${HD["${prefix}_${key}"]:-}"
     done
+    [[ "$prefix" == "act" ]] && printf 'dir_files_bytes=%s\n' "${HD[dir_files_bytes]:-}"
   } > "$file" 2>/dev/null || true
 }
 
 _hd_activity_load() {
-  local file="$1" line key value
+  local prefix="$1" file="$2" line key value
   while IFS= read -r line; do
     key="${line%%=*}"; value="${line#*=}"
     [[ "$key" =~ ^[A-Za-z0-9_]+$ ]] || continue
     HD["$key"]="$value"
   done < "$file"
-  HD[act_scanned_at]="$(stat -c %Y "$file" 2>/dev/null || echo '')"
+  HD["${prefix}_scanned_at"]="$(stat -c %Y "$file" 2>/dev/null || echo '')"
 }
 
+# The FileBrowser / Obsidian tree.
+hd_collect_activity_files() {
+  local root="${DATA_PATH:-/mnt/data}/files"
+  HD[act_root]="$root"
+  if [[ ! -d "$root" ]]; then
+    HD[act_status]="unavailable"
+    return 0
+  fi
+  _hd_scan_tree act files "$root" _hd_list_tree_host "${1:-0}"
+}
+
+# The Nextcloud drive.
+hd_collect_activity_drive() {
+  HD[dact_root]="/var/www/html/data"
+  if [[ "${HD[drive_present]:-0}" != "1" ]]; then
+    HD[dact_status]="absent"
+    return 0
+  fi
+  if [[ "${HD["dk_nextcloud-app_status"]:-}" != "running" ]]; then
+    HD[dact_status]="unavailable"
+    return 0
+  fi
+  _hd_scan_tree dact drive "/var/www/html/data" _hd_list_tree_drive "${1:-0}"
+}
+
+# Backwards compatibility: anything still calling the old name gets the
+# FileBrowser tree, which is what it used to scan.
+hd_collect_activity() { hd_collect_activity_files "$@"; }
 # ── Containers ───────────────────────────────────────────────────────────────
 hd_collect_containers() {
   if ! command -v docker >/dev/null 2>&1; then
@@ -884,14 +964,25 @@ hd_history_column() {
 
 # ── Orchestration ────────────────────────────────────────────────────────────
 # hd_collect_all [--live] [--scan] [--container-stats]
+# hd_collect_all [--live] [--scan] [--container-stats] [--activity MODE]
+#
+# MODE selects which file trees are walked: both (default), files, drive, none.
+# The dashboard scans only what it is going to display, because a tree walk is
+# by far the most expensive thing here; the monitor always scans both, since
+# noticing a mass deletion is one of the things it exists for.
 hd_collect_all() {
-  local live=0 scan=0
-  local arg
+  local live=0 scan=0 activity="both"
+  local arg expect_activity=0
   for arg in "$@"; do
+    if [[ "$expect_activity" == "1" ]]; then
+      activity="$arg"; expect_activity=0; continue
+    fi
     case "$arg" in
       --live)            live=1 ;;
       --scan)            scan=1 ;;
       --container-stats) HD_WANT_CONTAINER_STATS=1 ;;
+      --activity)        expect_activity=1 ;;
+      --activity=*)      activity="${arg#--activity=}" ;;
     esac
   done
 
@@ -909,7 +1000,14 @@ hd_collect_all() {
   hd_collect_filebrowser
   hd_collect_tailscale
   hd_collect_backups
-  hd_collect_activity "$scan"
+
+  case "$activity" in
+    both)  hd_collect_activity_files "$scan"; hd_collect_activity_drive "$scan" ;;
+    files) hd_collect_activity_files "$scan" ;;
+    drive) hd_collect_activity_drive "$scan" ;;
+    none)  : ;;
+    *)     hd_collect_activity_files "$scan"; hd_collect_activity_drive "$scan" ;;
+  esac
 
   hd_prev_save
 }
