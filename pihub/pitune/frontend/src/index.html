@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>PiTune</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="topbar">
+    <h1>PiTune</h1>
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="library">Library</button>
+      <button class="tab-btn" data-tab="youtube">YouTube</button>
+      <button class="tab-btn" data-tab="queue">Queue</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Local library, browsed via Navidrome's Subsonic API -->
+    <section id="tab-library" class="tab-panel active">
+      <div id="library-login" class="login-box hidden">
+        <p>Enter your Navidrome account to browse the local library.</p>
+        <input id="login-user" type="text" placeholder="Username" autocomplete="username">
+        <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
+        <button id="login-submit">Connect</button>
+        <p class="hint">Stored only in this browser (localStorage). Create a user first from
+          Navidrome's own admin UI if you haven't already.</p>
+      </div>
+
+      <div id="library-browser" class="browser hidden">
+        <div class="breadcrumbs" id="library-breadcrumbs"></div>
+        <ul class="item-list" id="library-list"></ul>
+      </div>
+    </section>
+
+    <!-- YouTube search — audio-only playback via the backend -->
+    <section id="tab-youtube" class="tab-panel">
+      <form id="yt-search-form" class="search-bar">
+        <input id="yt-search-input" type="search" placeholder="Search YouTube…" autocomplete="off">
+        <button type="submit">Search</button>
+      </form>
+      <ul class="item-list" id="yt-results"></ul>
+    </section>
+
+    <!-- Playback queue -->
+    <section id="tab-queue" class="tab-panel">
+      <ul class="item-list" id="queue-list"></ul>
+    </section>
+  </main>
+
+  <footer class="player-bar">
+    <div class="now-playing">
+      <div class="track-title" id="np-title">Nothing playing</div>
+      <div class="track-artist" id="np-artist"></div>
+    </div>
+
+    <div class="transport">
+      <button id="btn-prev" title="Previous">⏮</button>
+      <button id="btn-playpause" title="Play/Pause">▶</button>
+      <button id="btn-next" title="Next">⏭</button>
+    </div>
+
+    <div class="progress">
+      <span id="np-time-current">0:00</span>
+      <input id="np-seek" type="range" min="0" max="100" value="0" step="0.1">
+      <span id="np-time-total">0:00</span>
+    </div>
+
+    <div class="volume">
+      <span>🔊</span>
+      <input id="np-volume" type="range" min="0" max="100" value="80">
+    </div>
+  </footer>
+
+  <audio id="audio" preload="none"></audio>
+
+  <script src="app.js"></script>
+</body>
+</html>

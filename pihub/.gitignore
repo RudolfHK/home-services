@@ -1,0 +1,15 @@
+# Never commit local state
+.env
+
+# Per-service persisted state — keep the directories (see .gitkeep), not
+# their contents.
+navidrome/data/*
+!navidrome/data/.gitkeep
+jellyfin/config/*
+!jellyfin/config/.gitkeep
+
+# Runtime / OS noise
+*.log
+.DS_Store
+__pycache__/
+*.pyc

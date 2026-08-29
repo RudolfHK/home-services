@@ -1,0 +1,336 @@
+# docker-compose.yml — PiHub: dashboard + PiTune + Jellyfin, each independent.
+#
+# Every service belongs to exactly one Compose profile — "core" (always on),
+# "pitune", or "jellyfin" — and COMPOSE_PROFILES in .env decides which
+# profiles a bare `docker compose up -d` brings up. The `pihub` CLI script
+# and the dashboard both operate at this same profile/product granularity
+# (start/stop "pitune" as a whole, not its three containers individually).
+#
+# Independence is the point: nothing here uses `depends_on: condition:
+# service_healthy` across a product boundary. pitune-frontend depends on
+# navidrome/pitune-backend because that's PiTune's OWN internal wiring, and
+# nginx starts without waiting on anything — if jellyfin is down, /jellyfin/
+# just 502s, but the dashboard and PiTune are unaffected. See nginx/nginx.conf
+# and README.md.
+#
+# "Restart on health failure" is NOT something a bare `restart:` policy gives
+# you — Docker only restarts a container when its process exits, not when a
+# healthcheck merely reports "unhealthy" while the process is still running.
+# The `autoheal` service below is what actually closes that gap: it watches
+# every container labelled `autoheal=true` and kills it the moment Docker
+# marks it unhealthy, so `restart: unless-stopped` can then bring it back.
+#
+# NOTE: no top-level `version:` key — it is obsolete in Compose v2.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  # ══════════════════════════════════════════════════════════════════════
+  # Core — reverse proxy, dashboard, management API. Always on.
+  # ══════════════════════════════════════════════════════════════════════
+
+  nginx:
+    profiles: ["core"]
+    image: nginx:alpine
+    container_name: pihub-nginx
+    restart: unless-stopped
+    logging: *default-logging
+
+    # Deliberately no depends_on here at all (see the file header) — nginx
+    # must come up regardless of any other service's state.
+    ports:
+      - "${PIHUB_PORT:-80}:80"
+
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "autoheal=true"
+
+  dashboard:
+    profiles: ["core"]
+    build: ./dashboard
+    container_name: pihub-dashboard
+    restart: unless-stopped
+    logging: *default-logging
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "autoheal=true"
+
+  management-api:
+    profiles: ["core"]
+    build: ./management-api
+    container_name: pihub-management-api
+    restart: unless-stopped
+    logging: *default-logging
+
+    environment:
+      TZ: ${TZ}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      MEDIA_PATH: /media
+
+    volumes:
+      # See management-api/app/main.py's module docstring for exactly what
+      # "read_only" here does and doesn't protect against.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/host/proc:ro
+      - /sys/class/thermal:/host/thermal:ro
+      - type: bind
+        source: ${MEDIA_ROOT}
+        target: /media
+        read_only: true
+        bind:
+          create_host_path: false
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "autoheal=true"
+
+  # Watches every container labelled autoheal=true and kills (not just
+  # flags) it on the first unhealthy report, letting `restart: unless-
+  # stopped` do the actual restart. See the file header for why this exists.
+  autoheal:
+    profiles: ["core"]
+    image: willfarrell/autoheal:latest
+    container_name: pihub-autoheal
+    restart: unless-stopped
+    logging: *default-logging
+
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: 10
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    security_opt:
+      - no-new-privileges:true
+
+  # ══════════════════════════════════════════════════════════════════════
+  # PiTune — local music (Navidrome) + YouTube audio (yt-dlp backend)
+  # ══════════════════════════════════════════════════════════════════════
+
+  navidrome:
+    profiles: ["pitune"]
+    image: deluan/navidrome:${NAVIDROME_TAG:-latest}
+    container_name: pihub-navidrome
+    restart: unless-stopped
+    logging: *default-logging
+
+    user: "${PUID}:${PGID}"
+
+    # Published directly (not just reverse-proxied) so you can reach
+    # Navidrome's own admin UI to create the account PiTune's Library tab
+    # logs in with — that account management has to happen here, PiHub
+    # doesn't reimplement it.
+    ports:
+      - "${NAVIDROME_PORT:-4533}:4533"
+
+    environment:
+      ND_MUSICFOLDER: /music
+      ND_DATAFOLDER: /data
+      ND_LOGLEVEL: ${ND_LOGLEVEL:-info}
+      ND_SCANSCHEDULE: ${ND_SCANSCHEDULE:-@every 1h}
+      TZ: ${TZ}
+
+    volumes:
+      - type: bind
+        source: ${MEDIA_ROOT}/music
+        target: /music
+        read_only: true
+        bind:
+          create_host_path: false
+      # Read-only: this is PiTune's yt-dlp downloads folder, not the curated
+      # library. Add it as a SECOND library from Navidrome's admin UI
+      # (Settings → Libraries) if you want saved YouTube tracks to show up —
+      # see pihub/pitune/backend/app/main.py.
+      - type: bind
+        source: ${MEDIA_ROOT}/downloads
+        target: /downloads
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NAVIDROME_DATA_PATH}
+        target: /data
+        bind:
+          create_host_path: false
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:4533/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      - "autoheal=true"
+
+  pitune-backend:
+    profiles: ["pitune"]
+    build: ./pitune/backend
+    container_name: pihub-pitune-backend
+    restart: unless-stopped
+    logging: *default-logging
+
+    environment:
+      TZ: ${TZ}
+      SEARCH_RESULT_LIMIT: ${SEARCH_RESULT_LIMIT:-20}
+      DOWNLOAD_ENABLED: ${DOWNLOAD_ENABLED:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      DOWNLOADS_PATH: /downloads
+
+    volumes:
+      # rw: this IS the writer for /api/save. Scoped to downloads/ only —
+      # never the music/ library itself. See app/main.py.
+      - type: bind
+        source: ${MEDIA_ROOT}/downloads
+        target: /downloads
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${YTDLP_COOKIES_HOST_FILE:-/dev/null}
+        target: /config/cookies.txt
+        read_only: true
+        bind:
+          create_host_path: false
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "autoheal=true"
+
+  pitune-frontend:
+    profiles: ["pitune"]
+    build: ./pitune/frontend
+    container_name: pihub-pitune-frontend
+    restart: unless-stopped
+    logging: *default-logging
+
+    # PiTune's own internal composition (not a cross-product dependency —
+    # see the file header) — its nginx proxies /api/ and /rest/ to these.
+    depends_on:
+      pitune-backend:
+        condition: service_healthy
+      navidrome:
+        condition: service_healthy
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "autoheal=true"
+
+  # ══════════════════════════════════════════════════════════════════════
+  # Jellyfin — video / movie / TV library
+  # ══════════════════════════════════════════════════════════════════════
+
+  jellyfin:
+    profiles: ["jellyfin"]
+    image: jellyfin/jellyfin:${JELLYFIN_TAG:-latest}
+    container_name: pihub-jellyfin
+    restart: unless-stopped
+    logging: *default-logging
+
+    # Published directly in addition to /jellyfin/ — handy for the one-time
+    # Base URL setup step (see nginx/nginx.conf) and for troubleshooting
+    # hardware transcoding without the proxy in the way.
+    ports:
+      - "${JELLYFIN_PORT:-8096}:8096"
+
+    environment:
+      TZ: ${TZ}
+
+    volumes:
+      - type: bind
+        source: ${JELLYFIN_CONFIG_PATH}
+        target: /config
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MEDIA_ROOT}/videos
+        target: /media/videos
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MEDIA_ROOT}/movies
+        target: /media/movies
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MEDIA_ROOT}/shows
+        target: /media/shows
+        read_only: true
+        bind:
+          create_host_path: false
+
+    # V4L2 stateless decode devices — this is the standard device layout on
+    # Raspberry Pi OS's kernel (Pi 5 decodes; it does NOT hardware-encode, so
+    # this only ever helps as a fallback — direct play stays strictly
+    # preferred, see README.md). If these paths don't exist on your board
+    # (non-Pi hardware, or a kernel without V4L2 stateless codecs), comment
+    # this whole block out — Jellyfin still runs fine on software decoding.
+    devices:
+      - /dev/video10:/dev/video10
+      - /dev/video11:/dev/video11
+      - /dev/video12:/dev/video12
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8096/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      - "autoheal=true"

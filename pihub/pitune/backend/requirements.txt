@@ -1,0 +1,8 @@
+# yt-dlp is intentionally left unpinned: YouTube changes its player/signature
+# logic often enough that an old yt-dlp simply stops working. scripts/update-
+# ytdlp.sh rebuilds this image with --no-cache specifically to pick up the
+# latest release from PyPI.
+yt-dlp
+
+fastapi==0.115.*
+uvicorn[standard]==0.32.*
