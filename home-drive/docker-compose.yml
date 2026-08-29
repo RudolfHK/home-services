@@ -332,8 +332,18 @@ services:
         bind:
           create_host_path: false
 
-    cap_drop:
-      - ALL
+    # NO cap_drop: ALL here, deliberately.
+    #
+    # The redis entrypoint starts as root, chowns /data, and then drops to the
+    # redis user with su-exec/setpriv. That needs CAP_CHOWN, CAP_SETUID and
+    # CAP_SETGID; dropping all capabilities makes the switch fail with
+    # "Operation not permitted", the entrypoint exits before redis ever listens,
+    # and the only visible symptom is `dependency failed to start: container
+    # homedrive-nextcloud-redis is unhealthy`.
+    #
+    # FileBrowser can drop everything because compose gives it an explicit
+    # `user:` and it never changes uid itself. CouchDB, which drops to uid 5984
+    # in its own entrypoint, is configured exactly like this one.
     security_opt:
       - no-new-privileges:true
 
