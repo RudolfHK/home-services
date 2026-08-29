@@ -1,0 +1,135 @@
+:root {
+  color-scheme: dark;
+  --bg: #121214;
+  --bg-elevated: #1c1c1f;
+  --border: #2c2c30;
+  --text: #ececee;
+  --text-dim: #9a9aa2;
+  --accent: #6ee7b7;
+  --warn: #fbbf24;
+  --danger: #f87171;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45em 0.8em;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+
+.hidden { display: none !important; }
+
+/* ── Top bar ─────────────────────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+  padding: 0.75em 1.25em;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.topbar h1 { margin: 0; font-size: 1.3em; color: var(--accent); }
+
+.stats-bar { display: flex; gap: 1.5em; flex-wrap: wrap; }
+.stat { display: flex; flex-direction: column; font-size: 0.85em; }
+.stat-label { color: var(--text-dim); }
+.stat-value { font-variant-numeric: tabular-nums; }
+
+/* ── Service cards ───────────────────────────────────────────────────── */
+main {
+  padding: 1.25em;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1em;
+}
+
+.card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+}
+
+.card-header { display: flex; align-items: center; justify-content: space-between; }
+.card-title { display: flex; align-items: center; gap: 0.5em; font-weight: 600; }
+.card-desc { color: var(--text-dim); font-size: 0.85em; }
+
+.dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.dot-running { background: var(--accent); }
+.dot-degraded { background: var(--warn); }
+.dot-partial { background: var(--warn); }
+.dot-stopped { background: var(--text-dim); }
+.dot-error { background: var(--danger); }
+
+.status-label { font-size: 0.8em; text-transform: capitalize; color: var(--text-dim); }
+
+.card-containers {
+  font-size: 0.78em;
+  color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+}
+
+.card-actions { display: flex; gap: 0.5em; flex-wrap: wrap; }
+
+/* ── Log modal ───────────────────────────────────────────────────────── */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1em;
+}
+.modal-box {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 100%;
+  max-width: 700px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75em 1em;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+#log-modal-body {
+  margin: 0;
+  padding: 1em;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.8em;
+}
+
+@media (max-width: 640px) {
+  .topbar { flex-direction: column; align-items: flex-start; }
+  main { grid-template-columns: 1fr; }
+}
