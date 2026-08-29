@@ -217,7 +217,35 @@ info "Current configuration:"
 occ config:system:get overwrite.cli.url 2>/dev/null | sed 's/^/    overwrite.cli.url = /' || true
 occ config:system:get trusted_domains  2>/dev/null | sed 's/^/    trusted_domain    = /' || true
 
-# ── 8. Summary ───────────────────────────────────────────────────────────────
+# ── 8. Make a bare `docker compose` include the drive ────────────────────────
+# The drive's services sit behind the `drive` profile so that a stack without it
+# is untouched by install.sh. The cost, once it IS installed, is that
+# `docker compose down` silently ignores five running containers and
+# `docker compose ps` does not list them — which looks exactly like the drive
+# having vanished.
+#
+# Compose reads COMPOSE_PROFILES from the project's .env, so setting it there
+# makes every plain compose command — up, down, ps, logs, restart — cover the
+# whole stack again. Written here rather than shipped in .env.example because it
+# must only take effect after the directories this script creates exist.
+if grep -q '^COMPOSE_PROFILES=' "$ENV_FILE"; then
+  if ! grep -q '^COMPOSE_PROFILES=.*drive' "$ENV_FILE"; then
+    warn "COMPOSE_PROFILES is set in .env but does not include 'drive'."
+    warn "Add it, or pass --profile drive to every docker compose command."
+  fi
+else
+  info "Adding COMPOSE_PROFILES=drive to .env…"
+  cat >> "$ENV_FILE" <<'PROFILES'
+
+# ── Compose profiles ─────────────────────────────────────────
+# Added by install-drive.sh. The drive's services live behind the "drive"
+# profile; without this line a plain `docker compose down` or `ps` would ignore
+# them. Remove it to hide the drive from bare compose commands again.
+COMPOSE_PROFILES=drive
+PROFILES
+fi
+
+# ── 9. Summary ───────────────────────────────────────────────────────────────
 echo ""
 echo "========================================================"
 echo -e "${GREEN}  The drive is up${NC}"

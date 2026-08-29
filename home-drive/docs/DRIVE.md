@@ -159,6 +159,35 @@ a viewing convenience, not a place to collaborate.
 
 ## Operating it
 
+### Starting and stopping
+
+The drive's containers live behind the `drive` compose profile. `install-drive.sh` adds
+`COMPOSE_PROFILES=drive` to `.env`, and from then on the ordinary commands cover
+everything:
+
+```bash
+docker compose ps              # all eight containers
+docker compose stop            # stop, keep them
+docker compose down            # stop and remove
+docker compose up -d           # bring the whole stack back
+```
+
+Without that line in `.env`, compose **silently ignores** the five drive containers —
+`down` removes only the core stack and reports success, which looks exactly like the drive
+having disappeared. If you hit that, either add the line or pass the profile explicitly:
+
+```bash
+docker compose --profile drive down
+```
+
+To take the drive down but leave the rest of the stack running:
+
+```bash
+docker compose stop nextcloud-web nextcloud-app nextcloud-cron nextcloud-redis nextcloud-db
+```
+
+### occ
+
 ```bash
 # The occ admin command, for everything below
 alias occ='docker exec -u www-data homedrive-nextcloud-app php /var/www/html/occ'
