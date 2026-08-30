@@ -14,8 +14,6 @@ from typing import Optional
 import httpx
 import psutil
 
-import docker_monitor
-
 # Host /proc and the thermal zone are bind-mounted read-only (see
 # ../docker-compose.yml) specifically so CPU%/RAM/uptime describe the Pi
 # itself, not this container's own much-shorter-lived view. This is the
@@ -94,19 +92,31 @@ async def _fetch_latest_ytdlp_version() -> Optional[str]:
         return None
 
 
-async def check_ytdlp_version(container: str) -> dict:
+async def _fetch_current_ytdlp_version(health_url: str) -> Optional[str]:
+    # Plain HTTP to pitune-backend's own /api/version, NOT `docker exec` —
+    # deliberately, so the Docker socket this whole process talks to never
+    # needs the exec capability at all (see docker-compose.yml's
+    # docker-socket-proxy and its EXEC=0). Every other check here (Docker
+    # state, HTTP health) is already read-only from Docker's point of view;
+    # exec is a meaningfully bigger capability than any of those, and this
+    # was the one thing motivating it.
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{health_url.rstrip('/')}/api/version")
+        resp.raise_for_status()
+        version = resp.json().get("yt_dlp_version")
+        return version if version and _YTDLP_VERSION_RE.match(version) else version
+    except (httpx.HTTPError, KeyError, ValueError):
+        return None
+
+
+async def check_ytdlp_version(health_url: str) -> dict:
     global _ytdlp_cache
     now = time.time()
     if _ytdlp_cache and now - _ytdlp_cache[0] < _YTDLP_CACHE_SECONDS:
         return {**_ytdlp_cache[1], "cached": True}
 
-    exec_result = await docker_monitor.exec_in_container(container, ["yt-dlp", "--version"])
-    current = exec_result["output"] if exec_result["ok"] else None
-    if current and not _YTDLP_VERSION_RE.match(current):
-        # yt-dlp sometimes prints a channel suffix or a warning line first —
-        # don't confidently claim a version that doesn't look like one.
-        current = current.splitlines()[-1].strip() if current else None
-
+    current = await _fetch_current_ytdlp_version(health_url)
     latest = await _fetch_latest_ytdlp_version()
     result = {
         "current": current,

@@ -1,13 +1,23 @@
 """Docker Engine API access — container status, start/stop/restart, logs,
 and a best-effort "is a newer image available" check.
 
-Security note on the docker socket: same as PiHub's earlier management-api,
-`read_only: true` on the bind mount (see ../docker-compose.yml) only stops
-this container from replacing the socket FILE, not what it can do over the
-API once connected. The actual boundary is application-level instead: every
-function below takes a container name that main.py has already resolved
-against config/services.yml's fixed registry — this module never accepts an
-arbitrary name typed into an HTTP request.
+Security note on Docker access: this module never touches the raw socket at
+all. DOCKER_HOST (see ../docker-compose.yml) points docker-py at
+docker-proxy, a tecnativa/docker-socket-proxy sidecar that holds the actual
+mounted socket and only forwards the specific endpoints this file needs
+(container list/inspect/start/stop/restart/logs, image inspect, registry
+manifest lookups) — EXEC is explicitly off, since nothing here calls it
+(pitune-backend exposes its own yt-dlp version over HTTP instead — see
+system_stats.py). That's the real boundary against a bug or a compromised
+dependency in this process turning into arbitrary access to the host: even
+full control of this container only gets you what the proxy forwards, not
+the whole Docker API.
+
+A second, narrower boundary still applies on top: every function below
+takes a container name that main.py has already resolved against
+config/services.yml's fixed registry — this module never accepts an
+arbitrary name typed into an HTTP request, regardless of what the proxy
+would otherwise allow.
 """
 
 import asyncio
@@ -113,25 +123,6 @@ def _logs_sync(name: str, lines: int) -> bytes:
 async def get_logs(name: str, lines: int = 200) -> list:
     log_bytes = await asyncio.to_thread(_logs_sync, name, lines)
     return log_bytes.decode("utf-8", errors="replace").splitlines()
-
-
-def _exec_sync(name: str, cmd: list) -> dict:
-    try:
-        container = _get_client().containers.get(name)
-        exit_code, output = container.exec_run(cmd)
-        return {"ok": exit_code == 0, "output": output.decode("utf-8", errors="replace").strip()}
-    except NotFound:
-        return {"ok": False, "output": "", "detail": "container not found"}
-    except (RuntimeError, RequestException) as exc:
-        return {"ok": False, "output": "", "detail": str(exc)}
-
-
-async def exec_in_container(name: str, cmd: list) -> dict:
-    # Only ever called with a fixed, hardcoded command (yt-dlp --version —
-    # see system_stats.py), never anything built from a request — exec into
-    # a container is meaningfully more powerful than the read-only status
-    # calls above and isn't something to expose generically.
-    return await asyncio.to_thread(_exec_sync, name, cmd)
 
 
 def _get_container_image_sync(name: str) -> Optional[str]:

@@ -83,7 +83,10 @@ services:
       TZ: ${TZ}
       SEARCH_RESULT_LIMIT: ${SEARCH_RESULT_LIMIT:-20}
       DOWNLOAD_ENABLED: ${DOWNLOAD_ENABLED:-false}
-      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      # Empty, not "*" — see app/main.py's CORS_ORIGINS comment.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Protects /api/save when DOWNLOAD_ENABLED=true — see app/main.py.
+      API_TOKEN: ${API_TOKEN:-}
       MUSIC_PATH: /music
       # yt-dlp caches the expensive part of extraction here (notably the
       # parsed player-JS signature/nsig functions), keyed by YouTube player

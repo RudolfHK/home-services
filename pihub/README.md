@@ -266,13 +266,30 @@ directly to the internet.
 
 | Control | What it does |
 |---|---|
-| Docker socket mounted `read_only: true` into homepage | Stops the container from replacing/deleting the socket file — **not** a real permission boundary on what Docker API calls it can make (full socket access is root-equivalent). The real control is the next row. |
-| homepage's config-driven container allow-list | Every start/stop/restart/logs call is resolved against `homepage/config/services.yml`'s fixed container list; the API never accepts a raw container name from a caller. See `homepage/README.md`'s security model. |
+| No raw Docker socket in homepage | It talks to `docker-proxy` (a `tecnativa/docker-socket-proxy` sidecar) instead, which forwards only the specific endpoints homepage needs — `EXEC=0` and everything else this stack doesn't use is off. A bug or a compromised dependency in homepage's own code only gets what the proxy allows through, never the whole Docker API. See `homepage/README.md`'s security model and `docker-compose.yml`'s `docker-proxy` service. |
+| homepage's config-driven container allow-list | On top of the proxy: every start/stop/restart/logs call is resolved against `homepage/config/services.yml`'s fixed container list; the API never accepts a raw container name from a caller. |
+| `API_TOKEN` on every mutating endpoint (homepage's start/stop/restart/logs, PiTune's `/api/save`) | Without it, those endpoints have no auth at all, and a plain unauthenticated POST is a "simple request" a browser sends cross-origin regardless of CORS — CORS only gates whether the *response* can be read, not whether the request is *sent*. `scripts/setup.sh` generates one automatically. See `homepage/backend/main.py`'s comments for the full reasoning, including its honest limit: this stops a malicious *webpage*, not a compromised device with direct LAN access. |
+| `CORS_ORIGINS` empty by default, not `*` | Every frontend here is always same-origin with its own API (reached through nginx) — legitimate use never needs a cross-origin allowance. |
+| Security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, a `Content-Security-Policy` for homepage and PiTune) | Set at PiHub's central nginx and, for homepage, also in its own FastAPI app (so its standalone deployment mode is covered too — nginx hides the duplicate). Not applied to Jellyfin's own responses: its player needs `blob:`/worker allowances for transcoding that aren't safe to guess at from outside its own app. |
 | Media library mounts are `read_only: true` everywhere except PiTune's `downloads/` | Navidrome and Jellyfin can't be tricked into writing into your library; the one writer (`pitune-backend`) is scoped to a disposable folder, not the library itself. |
 | `no-new-privileges` on every container | Standard defense-in-depth. |
 | Video-ID validation in pitune-backend | YouTube video IDs are checked against `^[A-Za-z0-9_-]{11}$` before reaching a `yt-dlp` command line, so a crafted ID can't be parsed as a CLI flag. |
 | Each product manages its own accounts | PiHub doesn't invent a login system — Navidrome and Jellyfin keep their own, and PiTune's UI just forwards Subsonic credentials to Navidrome. |
-| `.env` never committed | See `.gitignore`. No real secrets live here by default (neither service needs a password from PiHub itself), but keep it out of git regardless. |
+| `.env` never committed | See `.gitignore`. Holds `API_TOKEN` now, in addition to paths/ports — keep it out of git regardless, as always. |
+
+**`NAVIDROME_PORT`/`JELLYFIN_PORT` have no proxy in front of them.** Unlike
+the nginx-fronted routes, these direct ports are the services' own bare HTTP
+servers — reachable by anything on your LAN with nothing extra between
+them: no rate limiting, no security headers. Consider restricting them to
+your own subnet with `ufw`:
+
+```bash
+ip -br -4 addr show eth0        # find YOUR LAN subnet, e.g. 192.168.1.0/24
+sudo ufw allow from 192.168.1.0/24 to any port 4533 proto tcp
+sudo ufw allow from 192.168.1.0/24 to any port 8096 proto tcp
+sudo ufw deny 4533/tcp
+sudo ufw deny 8096/tcp           # only reachable from that subnet now
+```
 
 ## Troubleshooting
 

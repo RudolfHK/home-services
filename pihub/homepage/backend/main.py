@@ -17,13 +17,14 @@ socket mount.
 import asyncio
 import logging
 import os
+import secrets
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import yaml
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -34,9 +35,36 @@ import system_stats
 logger = logging.getLogger("homepage")
 logging.basicConfig(level=logging.INFO)
 
-CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
+# Deliberately NOT "*" by default: this only protects anything at all once
+# paired with the token check below. A plain, unauthenticated POST from a
+# malicious webpage's background fetch() executes server-side regardless of
+# CORS — CORS only ever gates whether cross-origin JS can READ a response,
+# never whether the browser is allowed to SEND a simple request in the first
+# place. What actually stops that here is API_TOKEN: a custom header always
+# forces a CORS preflight, and a non-wildcard origin list makes that
+# preflight fail for anything that isn't this same origin. The two pieces
+# only work together — narrowing this alone, without the token below, would
+# still leave every mutating endpoint executable by a blind cross-origin
+# POST. See README.md's security model for the full reasoning and its
+# honest limits (it stops a malicious WEBPAGE; it does not stop a
+# compromised device with direct LAN access, which has no browser and thus
+# no CORS to enforce in the first place).
+CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/app/config"))
 FRONTEND_DIR = Path(os.environ.get("FRONTEND_DIR", "/app/frontend"))
+
+# If unset, every mutating endpoint below runs with no auth at all — fine
+# for a quick local test, not for anything reachable by other devices. Set
+# API_TOKEN in .env (scripts/setup.sh generates one); the frontend fetches
+# it once from /api/auth/token (a same-origin-only read, see CORS_ORIGINS
+# above) and attaches it as X-PiHub-Token on every mutating request after.
+API_TOKEN = os.environ.get("API_TOKEN", "").strip()
+if not API_TOKEN:
+    logger.warning(
+        "API_TOKEN is not set — every start/stop/restart/logs endpoint is "
+        "unauthenticated. Set API_TOKEN in .env (see .env.example) before "
+        "exposing this to any network other than your own machine."
+    )
 
 app = FastAPI(title="PiHub Homepage")
 app.add_middleware(
@@ -45,6 +73,41 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Set here (not only at PiHub's central nginx) so the standalone deployment
+# — no nginx in front at all, see docker-compose.yml — is protected too;
+# nginx hides these when proxying so the integrated deployment gets exactly
+# one copy, not a duplicate. Safe to be this strict: no external images, no
+# inline scripts/styles, one same-origin API — see README.md.
+_SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self'; "
+        "img-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
+        "base-uri 'self'; form-action 'self'"
+    ),
+}
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    for name, value in _SECURITY_HEADERS.items():
+        response.headers[name] = value
+    return response
+
+
+async def require_token(x_pihub_token: str = Header(default="")):
+    if not API_TOKEN:
+        return  # see the startup warning above — explicitly opted out
+    # compare_digest instead of `==`: a naive comparison leaks how many
+    # leading characters matched through response-time differences, letting
+    # an attacker recover the token one byte at a time.
+    if not secrets.compare_digest(x_pihub_token, API_TOKEN):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-PiHub-Token header")
 
 
 # ── Config loading ──────────────────────────────────────────────────────
@@ -142,6 +205,18 @@ async def get_settings():
     return load_settings()
 
 
+@app.get("/api/auth/token")
+async def get_auth_token():
+    # Freely readable by anything that can reach this endpoint — same-
+    # origin JS gets it via this call; a non-browser client on the LAN
+    # could read it too, same as it could just view-source the page. Its
+    # actual job is narrower: stop a CROSS-ORIGIN webpage's JS from ever
+    # learning it, which CORS_ORIGINS (not "*") does enforce. See the
+    # CORS_ORIGINS comment above for what this does and doesn't protect
+    # against.
+    return {"token": API_TOKEN, "enabled": bool(API_TOKEN)}
+
+
 @app.get("/api/services")
 async def list_services():
     services = load_services()
@@ -200,28 +275,28 @@ def _act_endpoint(service_id: str, action: str):
     return service
 
 
-@app.post("/api/services/{service_id}/start")
+@app.post("/api/services/{service_id}/start", dependencies=[Depends(require_token)])
 async def start_service(service_id: str):
     service = _act_endpoint(service_id, "start")
     results = await docker_monitor.act(service["containers"], "start")
     return {"service": service_id, "action": "start", "results": results}
 
 
-@app.post("/api/services/{service_id}/stop")
+@app.post("/api/services/{service_id}/stop", dependencies=[Depends(require_token)])
 async def stop_service(service_id: str):
     service = _act_endpoint(service_id, "stop")
     results = await docker_monitor.act(service["containers"], "stop")
     return {"service": service_id, "action": "stop", "results": results}
 
 
-@app.post("/api/services/{service_id}/restart")
+@app.post("/api/services/{service_id}/restart", dependencies=[Depends(require_token)])
 async def restart_service(service_id: str):
     service = _act_endpoint(service_id, "restart")
     results = await docker_monitor.act(service["containers"], "restart")
     return {"service": service_id, "action": "restart", "results": results}
 
 
-@app.post("/api/services/start-all")
+@app.post("/api/services/start-all", dependencies=[Depends(require_token)])
 async def start_all():
     services = [s for s in load_services() if s["manageable"]]
     out = {}
@@ -230,7 +305,7 @@ async def start_all():
     return {"results": out}
 
 
-@app.post("/api/services/stop-all")
+@app.post("/api/services/stop-all", dependencies=[Depends(require_token)])
 async def stop_all():
     services = [s for s in load_services() if s["manageable"]]
     out = {}
@@ -239,7 +314,7 @@ async def stop_all():
     return {"results": out}
 
 
-@app.get("/api/services/{service_id}/logs")
+@app.get("/api/services/{service_id}/logs", dependencies=[Depends(require_token)])
 async def service_logs(service_id: str, lines: int = Query(200, ge=1, le=2000), container: Optional[str] = None):
     services = load_services()
     service = _find_service(services, service_id)
@@ -272,7 +347,13 @@ async def updates():
 
     ytdlp = None
     if any(c == "pitune-backend" for s in services for c in s["containers"]):
-        ytdlp = await system_stats.check_ytdlp_version("pitune-backend")
+        # Hardcoded, same as the container-name check above it: pitune-
+        # backend's own address isn't something services.yml's per-product
+        # health_url captures (that one points at navidrome — see
+        # config/services.yml), and this is the one place that needs
+        # pitune-backend's own. Over HTTP (GET /api/version), not `docker
+        # exec` — see system_stats.check_ytdlp_version's own comment.
+        ytdlp = await system_stats.check_ytdlp_version("http://pitune-backend:8000")
 
     return {"images": image_checks, "ytdlp": ytdlp}
 

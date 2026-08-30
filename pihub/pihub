@@ -28,7 +28,7 @@ compose() { docker compose --profile core --profile homepage --profile pitune --
 
 services_for() {
   case "$1" in
-    core)     echo "nginx autoheal" ;;
+    core)     echo "nginx autoheal docker-proxy" ;;
     homepage) echo "homepage" ;;
     pitune)   echo "navidrome pitune-backend pitune-frontend" ;;
     jellyfin) echo "jellyfin" ;;

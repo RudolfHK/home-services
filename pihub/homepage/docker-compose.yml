@@ -26,13 +26,20 @@ services:
       - "${HOMEPAGE_PORT:-80}:8080"
 
     environment:
-      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      # Empty, not "*" — see backend/main.py's CORS_ORIGINS comment.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Required to use start/stop/restart/logs — see backend/main.py.
+      API_TOKEN: ${API_TOKEN:-}
       MEDIA_PATH: /media
+      # Talks to docker-proxy instead of a raw mounted socket — see that
+      # service's own comment below and backend/docker_monitor.py's module
+      # docstring.
+      DOCKER_HOST: tcp://docker-proxy:2375
+
+    depends_on:
+      - docker-proxy
 
     volumes:
-      # See backend/docker_monitor.py's module docstring for exactly what
-      # "read_only" here does and doesn't protect against.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /proc:/host/proc:ro
       - /sys/class/thermal:/host/thermal:ro
       # Read-only, and shutil.disk_usage() never reads file contents —
@@ -54,3 +61,40 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # Filters the Docker API down to exactly what homepage needs — see
+  # ../docker-compose.yml's docker-proxy service for the full reasoning.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: pihub-homepage-standalone-docker-proxy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      POST: 1
+      DISTRIBUTION: 1
+      EXEC: 0
+      NETWORKS: 0
+      VOLUMES: 0
+      SERVICES: 0
+      TASKS: 0
+      NODES: 0
+      SWARM: 0
+      SYSTEM: 0
+      PLUGINS: 0
+      SECRETS: 0
+      CONFIGS: 0
+      BUILD: 0
+      COMMIT: 0
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    security_opt:
+      - no-new-privileges:true

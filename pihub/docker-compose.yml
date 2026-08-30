@@ -75,13 +75,26 @@ services:
     logging: *default-logging
 
     environment:
-      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      # Empty, not "*": the frontend and API are always served from the
+      # same origin here (this one container, reached through nginx), so
+      # legitimate use never needs a cross-origin allowance — only set this
+      # if you're running a separate frontend against this API directly.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
       MEDIA_PATH: /media
+      # Required to use start/stop/restart/logs — see homepage/README.md's
+      # security model. scripts/setup.sh generates this; if you're not
+      # using it, set your own with `openssl rand -hex 32`.
+      API_TOKEN: ${API_TOKEN:-}
+      # Talks to docker-proxy instead of a raw mounted socket — docker-py's
+      # from_env() reads DOCKER_HOST exactly like the real docker CLI does,
+      # so docker_monitor.py needed no code change for this. See
+      # docker-proxy's own comment above for what it does and doesn't allow.
+      DOCKER_HOST: tcp://docker-proxy:2375
+
+    depends_on:
+      - docker-proxy
 
     volumes:
-      # See homepage/backend/docker_monitor.py's module docstring for
-      # exactly what "read_only" here does and doesn't protect against.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /proc:/host/proc:ro
       - /sys/class/thermal:/host/thermal:ro
       # Read-only, and shutil.disk_usage() never reads file contents — only
@@ -124,6 +137,53 @@ services:
     environment:
       AUTOHEAL_CONTAINER_LABEL: autoheal
       AUTOHEAL_INTERVAL: 10
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    security_opt:
+      - no-new-privileges:true
+
+  # Filters the Docker API down to exactly what homepage needs, so a bug or
+  # a compromised dependency in that FastAPI app (an HTTP API parsing
+  # external YAML/JSON, unlike autoheal's small fixed bash loop, which keeps
+  # its own direct socket mount above) can't turn into arbitrary root-
+  # equivalent access via the socket. EXEC=0 in particular: nothing left in
+  # this stack needs it, now that pitune-backend exposes its own yt-dlp
+  # version over HTTP instead of homepage exec-ing into it — see
+  # homepage/backend/system_stats.py.
+  #
+  # Profiles list both "core" and "homepage", not just "core": homepage
+  # depends_on this, and Compose refuses to even parse the file — for ANY
+  # command, not just up — if a depends_on target's profile isn't active
+  # alongside the dependent service's. Narrowing .env to homepage without
+  # core would otherwise break the whole compose file, not just skip this
+  # one service.
+  docker-proxy:
+    profiles: ["core", "homepage"]
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: pihub-docker-proxy
+    restart: unless-stopped
+    logging: *default-logging
+
+    environment:
+      CONTAINERS: 1   # list/inspect containers — status, uptime, health
+      IMAGES: 1        # inspect local images — the update-freshness check
+      POST: 1          # start/stop/restart act via POST
+      DISTRIBUTION: 1  # registry manifest lookups — also the update check
+      EXEC: 0
+      NETWORKS: 0
+      VOLUMES: 0
+      SERVICES: 0
+      TASKS: 0
+      NODES: 0
+      SWARM: 0
+      SYSTEM: 0
+      PLUGINS: 0
+      SECRETS: 0
+      CONFIGS: 0
+      BUILD: 0
+      COMMIT: 0
 
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -204,7 +264,10 @@ services:
       TZ: ${TZ}
       SEARCH_RESULT_LIMIT: ${SEARCH_RESULT_LIMIT:-20}
       DOWNLOAD_ENABLED: ${DOWNLOAD_ENABLED:-false}
-      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      # Empty, not "*" — see app/main.py's CORS_ORIGINS comment.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Protects /api/save when DOWNLOAD_ENABLED=true — see app/main.py.
+      API_TOKEN: ${API_TOKEN:-}
       DOWNLOADS_PATH: /downloads
       # yt-dlp caches the expensive part of extraction here (notably the
       # parsed player-JS signature/nsig functions), keyed by YouTube player

@@ -59,6 +59,14 @@ else
   cp .env.example .env
   # Portable in-place sed (GNU and BSD both accept this two-arg -i form).
   sed -i.bak "s|^MEDIA_ROOT=.*|MEDIA_ROOT=$media_root|" .env && rm -f .env.bak
+
+  # Without this, the homepage dashboard's start/stop/restart/logs and
+  # PiTune's /api/save (if DOWNLOAD_ENABLED) run with no auth at all — see
+  # README.md's Security model. Generated fresh every install; if you ever
+  # need to rotate it, edit .env and restart homepage + pitune-backend.
+  api_token="$(openssl rand -hex 32)"
+  sed -i.bak "s|^API_TOKEN=.*|API_TOKEN=$api_token|" .env && rm -f .env.bak
+
   echo "Wrote .env (MEDIA_ROOT=$media_root). Review it — PUID/PGID default to 1000/1000,"
   echo "run 'id -u' / 'id -g' if that isn't you."
 fi

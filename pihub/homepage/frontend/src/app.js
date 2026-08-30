@@ -3,8 +3,15 @@ import { renderSystemStats, systemAlerts } from "./components/SystemStats.js";
 import { renderAlerts, renderUpdates } from "./components/HealthPanel.js";
 import { openLogViewer } from "./components/LogViewer.js";
 
+// Fetched once at init from /api/auth/token (a same-origin-only read — see
+// that endpoint's own comment in main.py) and attached to every request
+// after. Harmless to send on read-only endpoints that don't check it;
+// required by the backend on every start/stop/restart/logs call.
+let apiToken = "";
+
 async function fetchJSON(url, opts) {
-  const res = await fetch(url, opts);
+  const headers = { ...(opts && opts.headers), "X-PiHub-Token": apiToken };
+  const res = await fetch(url, { ...opts, headers });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json();
 }
@@ -122,6 +129,13 @@ document.getElementById("check-updates").addEventListener("click", async (e) => 
 
 // ── Init ──────────────────────────────────────────────────────────────
 async function init() {
+  try {
+    const auth = await fetchJSON("/api/auth/token");
+    apiToken = auth.token || "";
+  } catch (err) {
+    console.warn("could not fetch API token — mutating actions will fail:", err);
+  }
+
   try {
     settings = await fetchJSON("/api/config/settings");
   } catch {

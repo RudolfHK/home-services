@@ -217,10 +217,24 @@ directly to the internet.
 |---|---|
 | Local library mounted read-only into Navidrome | Navidrome only ever scans; it can't be tricked into writing into your library. |
 | Local library mounted read-only into the backend by default | `/api/save` (the only writer) is a no-op until you explicitly opt in via `DOWNLOAD_ENABLED` **and** `MUSIC_MOUNT_MODE`. |
+| `API_TOKEN` on `/api/save` | Without it, that endpoint has no auth at all once `DOWNLOAD_ENABLED=true` — and a plain unauthenticated POST is a "simple request" a browser sends cross-origin regardless of CORS, so CORS alone would not have stopped a malicious webpage from triggering a download with no user interaction. See `backend/app/main.py`'s `API_TOKEN`/`CORS_ORIGINS` comments for the full reasoning. |
+| `CORS_ORIGINS` empty by default, not `*` | The frontend and backend are always same-origin here (one reverse proxy) — legitimate use never needs a cross-origin allowance. |
+| Security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, a strict `Content-Security-Policy`) | Set at the frontend's own nginx — safe to make this strict specifically because the app has no inline scripts/styles and only one external resource type (YouTube's thumbnail CDN, allowed via `img-src`). |
 | Navidrome's own auth (Subsonic token scheme) | PiTune doesn't invent its own user system for the library — it reuses Navidrome's, salted-hash-per-request, never sending the raw password after the first browser-local save. |
 | `no-new-privileges` on every container | Standard defense-in-depth even though nothing here needs extra capabilities. |
 | Video-ID validation in the backend | YouTube video IDs are checked against `^[A-Za-z0-9_-]{11}$` before being placed on a `yt-dlp` command line, so a crafted ID can't be parsed as a CLI flag. |
-| `.env` never committed | Holds no secrets by default in this stack (no passwords are generated here), but keep it out of git regardless — see `.gitignore`. |
+| `.env` never committed | Holds no long-lived secrets besides `API_TOKEN` (no passwords are generated here), but keep it out of git regardless — see `.gitignore`. |
+
+**`NAVIDROME_PORT` has no proxy in front of it.** Unlike `PITUNE_PORT`
+(nginx: rate-limit-able, gets the headers above), Navidrome's direct port is
+its own bare HTTP server — reachable by anything on your LAN with nothing
+extra between them. Consider restricting it to your own subnet with `ufw`:
+
+```bash
+ip -br -4 addr show eth0        # find YOUR LAN subnet, e.g. 192.168.1.0/24
+sudo ufw allow from 192.168.1.0/24 to any port 4533 proto tcp
+sudo ufw deny 4533/tcp           # only reachable from that subnet now
+```
 
 ## Troubleshooting
 

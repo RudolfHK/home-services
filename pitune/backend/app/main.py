@@ -14,11 +14,12 @@ import asyncio
 import logging
 import os
 import re
+import secrets
 import shutil
 from pathlib import Path
 
 import yt_dlp
-from fastapi import FastAPI, HTTPException, Path as PathParam, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Path as PathParam, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -28,7 +29,33 @@ logging.basicConfig(level=logging.INFO)
 SEARCH_RESULT_LIMIT = int(os.environ.get("SEARCH_RESULT_LIMIT", "20"))
 DOWNLOAD_ENABLED = os.environ.get("DOWNLOAD_ENABLED", "false").strip().lower() == "true"
 MUSIC_PATH = Path(os.environ.get("MUSIC_PATH", "/music"))
-CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
+# Empty, not "*": the frontend and this API are always same-origin (served
+# through the same nginx), so legitimate use never needs a cross-origin
+# allowance. See main.py's require_token for why this alone wouldn't be
+# enough to protect /api/save even if it were narrowed instead of emptied.
+CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+
+# Protects /api/save only — /api/search and /api/stream are read-only and
+# stay open (see README.md's security model for that trade-off). Without
+# this, a malicious webpage's background POST would trigger a real download
+# to disk with no user interaction, purely because DOWNLOAD_ENABLED=true —
+# CORS alone would not stop it: a plain POST with no custom header is a
+# "simple request" that a browser sends cross-origin regardless of CORS,
+# which only ever gates whether the attacker's JS can read the response.
+API_TOKEN = os.environ.get("API_TOKEN", "").strip()
+if DOWNLOAD_ENABLED and not API_TOKEN:
+    logger.warning(
+        "DOWNLOAD_ENABLED=true but API_TOKEN is not set — /api/save has no "
+        "auth at all. Set API_TOKEN in .env before exposing this beyond "
+        "your own machine."
+    )
+
+
+async def require_token(x_pihub_token: str = Header(default="")):
+    if not API_TOKEN:
+        return
+    if not secrets.compare_digest(x_pihub_token, API_TOKEN):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-PiHub-Token header")
 
 # /dev/null is bind-mounted here when YTDLP_COOKIES_FILE is unset (see
 # docker-compose.yml) — reading it back yields an empty file, not an error, so
@@ -102,6 +129,11 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/version")
+async def version():
+    return {"yt_dlp_version": yt_dlp.version.__version__}
+
+
 @app.get("/api/search")
 async def search(q: str = Query(..., min_length=1), limit: int = SEARCH_RESULT_LIMIT):
     try:
@@ -153,7 +185,7 @@ async def stream(video_id: str = PathParam(..., min_length=11, max_length=11)):
     return StreamingResponse(body(), media_type=media_type)
 
 
-@app.post("/api/save/{video_id}")
+@app.post("/api/save/{video_id}", dependencies=[Depends(require_token)])
 async def save_to_library(video_id: str = PathParam(..., min_length=11, max_length=11)):
     video_id = _validate_video_id(video_id)
 
