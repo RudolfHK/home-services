@@ -410,6 +410,74 @@ services:
     labels:
       - "autoheal=true"
 
+  # ══════════════════════════════════════════════════════════════════════
+  # Tailscale (optional) — reach PiHub from outside the LAN
+  # ══════════════════════════════════════════════════════════════════════
+  # Off by default: only starts as part of the "tailscale" profile
+  # (`pihub start tailscale`, or `docker compose --profile tailscale up
+  # -d`). PIHUB_PORT, NAVIDROME_PORT and JELLYFIN_PORT are completely
+  # unaffected either way — this is an ADDITIONAL way in, not a replacement.
+  #
+  # Stays on the normal compose network rather than using `network_mode:
+  # service:tailscale` (which would force nginx to give up its own `ports:`
+  # mapping) — `tailscale serve` proxies to the existing central `nginx`
+  # service by its Docker DNS name instead, which already does all the
+  # /pitune/, /jellyfin/ path routing internally (see tailscale/serve.json).
+  #
+  # Before enabling this: apply ../tailscale/acl-policy.hujson to your
+  # tailnet first. Without it, once this node joins the tailnet, EVERY
+  # port it has open — including NAVIDROME_PORT, JELLYFIN_PORT and even
+  # PIHUB_PORT itself — becomes reachable by any tailnet member, not just
+  # the :443 endpoint below. See ../tailscale/README.md.
+  tailscale:
+    profiles: ["tailscale"]
+    image: tailscale/tailscale:${TAILSCALE_TAG:-latest}
+    container_name: pihub-tailscale
+    hostname: ${TS_HOSTNAME:-pihub}
+    restart: unless-stopped
+    logging: *default-logging
+
+    # Deliberately no depends_on on nginx: it's in a different profile
+    # ("core"), and Compose refuses to even parse the file if a depends_on
+    # target's profile isn't active alongside the dependent service's (the
+    # exact issue docker-proxy's own comment above already documents for
+    # homepage). Not health-gated anyway — if nginx isn't up yet, `tailscale
+    # serve` just retries its proxy connection until it is.
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      TS_HOSTNAME: ${TS_HOSTNAME:-pihub}
+      TS_SERVE_CONFIG: /config/tailscale/serve.json
+      TS_USERSPACE: "false"
+      TS_ACCEPT_DNS: "true"
+      # e.g. --advertise-tags=tag:home-server — see ../tailscale/acl-policy.hujson.
+      TS_EXTRA_ARGS: ${TS_EXTRA_ARGS:-}
+      TS_STATE_DIR: /var/lib/tailscale
+      TZ: ${TZ}
+
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./tailscale:/config/tailscale:ro
+      - /dev/net/tun:/dev/net/tun
+
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      # See home-drive/docker-compose.yml's identical check for why this
+      # asserts on BackendState specifically rather than the exit code.
+      test:
+        - CMD-SHELL
+        - "tailscale status --json | tr -d '[:space:]' | grep -q '\"BackendState\":\"Running\"'"
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 45s
+
 # ── Named volumes ────────────────────────────────────────────────────────────
 volumes:
-  ytdlp-cache:   # yt-dlp's extractor cache (see pitune-backend's environment)
+  ytdlp-cache:      # yt-dlp's extractor cache (see pitune-backend's environment)
+  tailscale-state:  # Tailscale auth/state — only used if the tailscale profile runs

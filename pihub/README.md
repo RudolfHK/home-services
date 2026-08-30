@@ -208,6 +208,7 @@ pihub start all           # start everything, regardless of .env
 pihub restart jellyfin    # restart one product
 pihub logs pitune         # tail logs for a product (or a raw container name)
 pihub update              # pull latest images, recreate only what was running
+pihub start tailscale     # optional — see Remote access via Tailscale
 ```
 
 ## Configuration (`.env`)
@@ -258,11 +259,10 @@ ${MEDIA_ROOT}/
 
 ## Security model
 
-Same posture as this repo's other stacks that don't put a VPN in front of
-themselves: this assumes it never leaves your home network. If you want
-access away from home, put PiHub behind your own VPN (see `home-drive`'s
-Tailscale setup for a working example) rather than exposing `PIHUB_PORT`
-directly to the internet.
+Same posture as this repo's other stacks by default: this assumes it never
+leaves your home network unless you turn on the optional Tailscale profile —
+see [Remote access via Tailscale](#remote-access-via-tailscale-optional)
+below — rather than exposing `PIHUB_PORT` directly to the internet.
 
 | Control | What it does |
 |---|---|
@@ -275,7 +275,8 @@ directly to the internet.
 | `no-new-privileges` on every container | Standard defense-in-depth. |
 | Video-ID validation in pitune-backend | YouTube video IDs are checked against `^[A-Za-z0-9_-]{11}$` before reaching a `yt-dlp` command line, so a crafted ID can't be parsed as a CLI flag. |
 | Each product manages its own accounts | PiHub doesn't invent a login system — Navidrome and Jellyfin keep their own, and PiTune's UI just forwards Subsonic credentials to Navidrome. |
-| `.env` never committed | See `.gitignore`. Holds `API_TOKEN` now, in addition to paths/ports — keep it out of git regardless, as always. |
+| `.env` never committed | See `.gitignore`. Holds `API_TOKEN` and, if you enable it, `TS_AUTHKEY`, in addition to paths/ports — keep it out of git regardless, as always. |
+| Tailscale ACL allow-list (`../tailscale/acl-policy.hujson`), off by default | Only used if you opt into the `tailscale` profile — see [Remote access via Tailscale](#remote-access-via-tailscale-optional). Grants only `tag:approved-device` sources access to port 443, not the whole node. |
 
 **`NAVIDROME_PORT`/`JELLYFIN_PORT` have no proxy in front of them.** Unlike
 the nginx-fronted routes, these direct ports are the services' own bare HTTP
@@ -290,6 +291,50 @@ sudo ufw allow from 192.168.1.0/24 to any port 8096 proto tcp
 sudo ufw deny 4533/tcp
 sudo ufw deny 8096/tcp           # only reachable from that subnet now
 ```
+
+## Remote access via Tailscale (optional)
+
+By default PiHub really does stop at your LAN, as the Security model above
+says. If you also want to reach it from outside the house — without opening
+any port on your router — an optional `tailscale` profile is included:
+
+```bash
+cp .env.example .env   # if you haven't already
+nano .env               # set TS_AUTHKEY (see below), leave TS_HOSTNAME/TS_EXTRA_ARGS as-is
+pihub start tailscale    # or: docker compose --profile tailscale up -d tailscale
+```
+
+This starts one extra container that joins your tailnet and, over that
+private WireGuard network only, serves PiHub's existing central nginx
+(homepage, `/pitune/`, `/jellyfin/` — everything already behind `PIHUB_PORT`)
+at `https://<TS_HOSTNAME>.<your-tailnet>.ts.net/`. `PIHUB_PORT` keeps working
+on the LAN exactly as before — this is an additional way in, not a
+replacement.
+
+**Before you enable this, two things have to happen on Tailscale's side
+first, not just in this repo:**
+
+1. Apply [`../tailscale/acl-policy.hujson`](../tailscale/acl-policy.hujson)
+   to your tailnet's ACL (Tailscale admin console → Access Controls). Skip
+   this and joining the tailnet exposes *every* open port on the Pi —
+   `NAVIDROME_PORT` and `JELLYFIN_PORT` included — to any device on your
+   tailnet, not just the one path above.
+2. Get a `TS_AUTHKEY` and, ideally, turn on device approval so a new device
+   can't reach anything until you've approved it. The full reasoning for why
+   "must be set up on the LAN first" isn't something Tailscale checks
+   literally, and what actually delivers that property instead, is written
+   up in [`../tailscale/docs/DEVICE-ONBOARDING.md`](../tailscale/docs/DEVICE-ONBOARDING.md).
+
+See [`../tailscale/README.md`](../tailscale/README.md) for the full
+picture, including why the ACL grants exactly one port (443) rather than
+opening the whole node, and why a static device allow-list — not a live
+concurrent-connection counter — is the actual "only these devices, only
+this many" control here. `nginx/nginx.conf`'s `limit_conn` (20 per source
+IP) is a narrower, complementary safety net on top of that — and, worth
+knowing, only a true per-device cap for direct LAN clients; over Tailscale
+it becomes an aggregate cap across all tailnet traffic, since `tailscale
+serve` itself hides the original client's IP at that layer (see the
+comment above `limit_conn_zone` in that file).
 
 ## Troubleshooting
 
@@ -348,8 +393,14 @@ pihub/
 │   └── config/               # persisted Jellyfin config (gitignored)
 ├── navidrome/
 │   └── data/                 # persisted Navidrome database (gitignored)
+├── tailscale/
+│   └── serve.json             # optional profile — see Remote access via Tailscale
 └── scripts/
     ├── setup.sh
     ├── update-yt-dlp.sh
     └── backup.sh             # backs up configs, not media
 ```
+
+See also [`../tailscale/`](../tailscale/) at the repo root — the shared ACL
+policy and device-onboarding docs used by every stack's Tailscale profile,
+not just this one.

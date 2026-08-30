@@ -1,0 +1,80 @@
+// PiHub / PiTune / Home Drive — shared tailnet ACL policy (template).
+//
+// This is NOT applied automatically — Tailscale ACLs live in the Tailscale
+// admin console (or are pushed via its API), not in this repo. Paste this
+// into https://login.tailscale.com/admin/acls (or your coordination
+// server's equivalent), replace every REPLACE-ME placeholder with your own
+// values, and save.
+//
+// ── What this policy actually does ──────────────────────────────────────
+// Tailscale's own default policy is permissive: every device in the
+// tailnet can reach every other device, on every port, once it's an
+// accepted member. That default is almost certainly wider than you want —
+// see ../docs/DEVICE-ONBOARDING.md for why. This policy narrows it to:
+//   1. Only devices tagged tag:approved-device can reach anything at all.
+//   2. Even those can only reach tag:home-server on port 443 — the one
+//      port each stack's `tailscale serve` actually answers on. Every
+//      other port a service happens to have open (Navidrome's 4533,
+//      Jellyfin's 8096, PiHub's raw nginx :80, etc.) stays unreachable
+//      over the tailnet even though the node itself is a tailnet member —
+//      those are LAN-only by design; joining a tailnet does not change
+//      that unless you let it, and this policy doesn't.
+//   3. tagOwners below controls who is allowed to actually apply these
+//      tags to a device in the first place — replace the placeholder
+//      email with your own Tailscale login. Without this block, nobody
+//      (including you) can tag a device at all.
+//
+// ── The "only devices I approve" requirement, and its real mechanism ────
+// Tags are not something a device can grant itself — only whichever
+// login(s) you list under tagOwners can apply tag:approved-device to a
+// device (via `tailscale up --advertise-tags=tag:approved-device`, or from
+// the admin console's device list). Combine this with tailnet-wide
+// "device approval" (Settings → Device management → require approval for
+// new devices) and you get the actual, enforceable version of "I decide
+// which devices get in": a new device authenticating to your tailnet sits
+// pending until you approve it AND it has no access to anything until you
+// (specifically, not the device itself) tag it tag:approved-device. See
+// ../docs/DEVICE-ONBOARDING.md for the full setup, including the
+// recommended "enroll it while physically on your home Wi-Fi, approve and
+// tag it, then it also works from anywhere" workflow — Tailscale itself
+// has no concept of "was on the LAN during setup", so this workflow is
+// what actually delivers that property in practice.
+//
+// ── "Only 2 devices at once" ─────────────────────────────────────────────
+// Deliberately NOT implemented as a live concurrent-connection counter —
+// see ../README.md's "Why not a literal concurrent-connection cap" section
+// for the reasoning. The way this policy actually bounds it: tag exactly
+// as many devices tag:approved-device as you want allowed, ever — tag two
+// devices and *only* those two can reach anything, full stop, not "the
+// first two to connect at a given moment." Untag a device (or remove it
+// from the tailnet) to revoke it; tag a different one to swap it in.
+{
+	"tagOwners": {
+		"tag:home-server":     ["REPLACE-ME-your-login@example.com"],
+		"tag:approved-device": ["REPLACE-ME-your-login@example.com"],
+	},
+
+	"acls": [
+		{
+			"action": "accept",
+			"src":    ["tag:approved-device"],
+			"dst":    ["tag:home-server:443"],
+		},
+	],
+
+	// Belt-and-suspenders default-deny reminder: any src/dst pair not
+	// listed in "acls" above is denied automatically — Tailscale ACLs are
+	// allowlists, there is no separate "deny" rule needed. If a device you
+	// expect to work can't reach a server, the fix is almost always "it
+	// isn't tagged tag:approved-device yet", not a missing deny rule.
+
+	// Optional but recommended: require the two tags above to be applied
+	// before a node can do anything at all, closing the gap where a freshly
+	// approved but not-yet-tagged device would otherwise inherit whatever
+	// your tailnet's default (no rule matches -> deny) already handles —
+	// this "grants" block is intentionally left out because the deny-by-
+	// default behavior above already covers it; don't add a blanket
+	// "tag:home-server" -> "tag:approved-device" rule unless you have a
+	// concrete reason a server needs to reach back to a client, which none
+	// of these stacks do.
+}
