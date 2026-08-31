@@ -6,14 +6,14 @@
 
 | Data | Location on Pi | In the archive? |
 |------|---------------|------------------|
-| CouchDB Obsidian vault | `$DATA_PATH/couchdb/` | **Yes** — dumped as JSON per database, with attachments inlined as base64 |
-| FileBrowser config / users | `$DATA_PATH/filebrowser/filebrowser.db` | **Yes** — consistent SQLite hot copy via `.backup` |
+| CouchDB Obsidian vault | `$DATA_PATH/couchdb/` | **Yes**, dumped as JSON per database, with attachments inlined as base64 |
+| FileBrowser config / users | `$DATA_PATH/filebrowser/filebrowser.db` | **Yes**, consistent SQLite hot copy via `.backup` |
 | Stack config files | `config/` in the project dir | **Yes** |
-| FileBrowser files | `$DATA_PATH/files/` | **Opt-in** — set `BACKUP_INCLUDE_FILES=true` |
-| `.env` (secrets) | project dir | **No** — see below |
+| FileBrowser files | `$DATA_PATH/files/` | **Opt-in**, set `BACKUP_INCLUDE_FILES=true` |
+| `.env` (secrets) | project dir | **No**, see below |
 
 `.env` is deliberately excluded: it holds the tailnet auth key and both admin passwords,
-and the archive may be pushed to third-party storage by rclone. Store it separately — a
+and the archive may be pushed to third-party storage by rclone. Store it separately, in a
 password manager or an encrypted file.
 
 Archives are written with mode `0600` and `$DATA_PATH/backups` with mode `0700`: the
@@ -22,18 +22,18 @@ archive contains every note in your vault in plaintext JSON.
 ### Why the file tree is opt-in
 
 Copying `$DATA_PATH/files/` into the nightly archive turns a 30-second job into one that
-can run for hours and needs as much free space again on the same drive — and it is a
-*second* copy on the *same* disk, which is not a backup in any meaningful sense. Use
+can run for hours and needs as much free space again on the same drive, and it's still just
+a *second* copy on the *same* disk, which isn't a backup in any meaningful sense. Use
 `rclone sync` or a plain `rsync` job to a different device for the file tree, and let
-`backup.sh` handle the two things that cannot be copied safely with `cp`: the live CouchDB
+`backup.sh` handle the two things that can't be copied safely with `cp`: the live CouchDB
 databases and the live SQLite file.
 
 ### Staging location
 
 The dump is staged in `$DATA_PATH/tmp/`, not `/tmp`. On Raspberry Pi OS `/tmp` is often a
-RAM-backed tmpfs, and a vault dump with inlined attachments will happily exceed it — the
-backup would take the machine down instead of failing politely. The staging directory is
-removed by an `EXIT` trap, so a failed run does not leave it behind.
+RAM-backed tmpfs, and a vault dump with inlined attachments will happily exceed it, taking
+the machine down instead of failing politely. The staging directory is removed by an `EXIT`
+trap, so a failed run doesn't leave it behind.
 
 ---
 
@@ -46,7 +46,7 @@ Add to the Pi's crontab (`crontab -e` as the user running Docker):
 30 2 * * * /home/pi/home-services/home-drive/scripts/backup.sh >> /var/log/homedrive-backup.log 2>&1
 ```
 
-The health check is no longer a cron entry — `scripts/install-monitoring.sh` installs it as
+The health check is no longer a cron entry: `scripts/install-monitoring.sh` installs it as
 a systemd timer that runs every 15 minutes. See [MONITORING.md](MONITORING.md).
 
 Logs rotate themselves (cron output); use `logrotate` for long-term log management:
@@ -73,12 +73,12 @@ All backup settings live in `.env`:
 | `BACKUP_DEST` | `$DATA_PATH/backups` | Where archives are stored |
 | `BACKUP_KEEP` | `7` | How many daily archives to keep |
 | `BACKUP_INCLUDE_FILES` | `false` | Include `$DATA_PATH/files/` in the archive (needs `rsync`) |
-| `BACKUP_INCLUDE_NEXTCLOUD_DATA` | `false` | Include the drive's user files. The drive stays **offline** for the whole run — see [DRIVE.md](DRIVE.md) |
+| `BACKUP_INCLUDE_NEXTCLOUD_DATA` | `false` | Include the drive's user files. The drive stays **offline** for the whole run, see [DRIVE.md](DRIVE.md) |
 | `RCLONE_REMOTE` | *(empty)* | rclone remote name for off-Pi copies |
 
 When the optional Nextcloud drive is running, the backup also puts it into maintenance
-mode, `pg_dump`s its database, verifies the dump is not truncated, and archives its
-`config/` directory — then takes it back out of maintenance mode, including on failure or
+mode, `pg_dump`s its database, verifies the dump isn't truncated, and archives its
+`config/` directory, then takes it back out of maintenance mode, including on failure or
 Ctrl-C. A stack without the drive skips all of that silently. See [DRIVE.md](DRIVE.md).
 
 Host packages the script uses: `jq` and `tar` are required, `sqlite3` is strongly
@@ -92,9 +92,9 @@ sudo apt-get install -y jq sqlite3 rsync
 ### Exit status
 
 `backup.sh` exits **non-zero** if any database failed to dump, if a dump came back
-truncated, or if the rclone push failed — so cron mails you even when `NTFY_URL` is not
-set. A dump that is not valid CouchDB JSON is discarded rather than archived: an archive
-full of empty files that looks like a successful backup is worse than no archive at all.
+truncated, or if the rclone push failed, so cron mails you even when `NTFY_URL` isn't set.
+A dump that isn't valid CouchDB JSON is discarded rather than archived: an archive full of
+empty files that looks like a successful backup is worse than no archive at all.
 
 `health-monitor.sh` independently warns when the newest archive is more than 26 hours old
 and fails at 48 hours, which is what actually catches a cron job that quietly stopped
@@ -139,18 +139,18 @@ What the restore script does:
 1. Extracts the archive into `$DATA_PATH/tmp/` (handles both the current flat layout and
    the older wrapper-directory layout).
 2. Recreates each CouchDB database and bulk-inserts documents in batches of 200
-   (`RESTORE_BATCH_SIZE`), so a multi-gigabyte vault does not exhaust RAM in one POST.
+   (`RESTORE_BATCH_SIZE`), so a multi-gigabyte vault doesn't exhaust RAM in one POST.
    Deleted-document rows are skipped and attachments are normalised back to
    `{content_type, data}` before being pushed.
 3. Replaces the FileBrowser SQLite database, stopping the container first and keeping the
    previous database as `filebrowser.db.pre-restore.<timestamp>`.
 4. Copies the archive's config files to `$DATA_PATH/restored-config-<timestamp>/` for you
-   to diff — it never overwrites your live `config/`.
+   to diff. It never overwrites your live `config/`.
 
 It exits non-zero if any database or batch failed.
 
 **System databases are not restored.** `_users`, `_replicator` and `_global_changes` are
-skipped: CouchDB recreates them on a fresh `single_node` start, and `_users` cannot be
+skipped: CouchDB recreates them on a fresh `single_node` start, and `_users` can't be
 restored via `_bulk_docs` anyway because its password hashes are instance-specific. If you
 created extra CouchDB users beyond the admin, recreate them in Fauxton at
 `https://<host>.<tailnet>.ts.net:8443/_utils/`.
@@ -164,7 +164,7 @@ created extra CouchDB users beyond the admin, recreate them in Fauxton at
 5. Start the stack: `docker compose up -d`
 6. Run `scripts/restore.sh <archive>` to restore CouchDB and FileBrowser DB.
 
-If the external SSD is also gone (hardware failure + data loss), restore from the
+If the external SSD is also gone (hardware failure and data loss), restore from the
 rclone remote:
 
 ```bash
@@ -189,8 +189,8 @@ create a 4th local copy on the Pi's shelf.
 
 ## What Is Not Backed Up (and Why)
 
-- **`.env`** — contains secrets. Store it in a password manager or encrypted file.
-- **Docker images** — pulled fresh from Docker Hub on any restore.
-- **Tailscale state volume** — the container will re-authenticate with your auth key on next start.
-- **FileBrowser files (`$DATA_PATH/files/`)** — opt-in via `BACKUP_INCLUDE_FILES=true`. For large drives this can take hours, and it lands on the same disk; a dedicated `rclone sync`/`rsync` job to another device is the better answer.
-- **CouchDB system databases (`_users`, `_replicator`, `_global_changes`)** — recreated automatically on a fresh start. Extra CouchDB users must be recreated by hand.
+- **`.env`**: contains secrets. Store it in a password manager or encrypted file.
+- **Docker images**: pulled fresh from Docker Hub on any restore.
+- **Tailscale state volume**: the container will re-authenticate with your auth key on next start.
+- **FileBrowser files (`$DATA_PATH/files/`)**: opt-in via `BACKUP_INCLUDE_FILES=true`. For large drives this can take hours, and it lands on the same disk; a dedicated `rclone sync`/`rsync` job to another device is the better answer.
+- **CouchDB system databases (`_users`, `_replicator`, `_global_changes`)**: recreated automatically on a fresh start. Extra CouchDB users must be recreated by hand.

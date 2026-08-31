@@ -1,4 +1,4 @@
-# Home Drive — Self-Hosted FileBrowser + Obsidian Sync on Raspberry Pi 5
+# Home Drive: Self-Hosted FileBrowser + Obsidian Sync on Raspberry Pi 5
 
 A private, containerised home drive and shared Obsidian vault hosted on a Raspberry Pi 5.
 **Nothing is exposed to the public internet.** All access is through a Tailscale tailnet
@@ -38,18 +38,18 @@ A private, containerised home drive and shared Obsidian vault hosted on a Raspbe
 | FileBrowser   | `https://<TS_HOSTNAME>.<tailnet>.ts.net/`    |
 | CouchDB API   | `https://<TS_HOSTNAME>.<tailnet>.ts.net/couchdb/` |
 | CouchDB admin (Fauxton) | `https://<TS_HOSTNAME>.<tailnet>.ts.net:8443/_utils/` |
-| Drive (Nextcloud) — optional | `https://<TS_HOSTNAME>.<tailnet>.ts.net:9443/` |
+| Drive (Nextcloud, optional) | `https://<TS_HOSTNAME>.<tailnet>.ts.net:9443/` |
 
 > Fauxton is served on **port 8443** at the root, not under `/couchdb/`. Its bundle requests
 > absolute paths like `/_all_dbs`, which under the `/couchdb/` prefix would be routed to
-> FileBrowser instead. The REST API works fine under `/couchdb/` — that is the URI to give
-> Obsidian LiveSync.
+> FileBrowser instead. The REST API works fine under `/couchdb/`, though: that's the URI to
+> give Obsidian LiveSync.
 
 ## Prepare the Pi
 
 Before `install.sh` will succeed, the Pi has to satisfy a handful of assumptions that the
-compose stack makes silently. This section explains what each one is and why it matters —
-follow [docs/SETUP.md](docs/SETUP.md) for the long-form OS install, and use this page as the
+compose stack makes silently. This section explains what each one is and why it matters.
+For the long-form OS install, follow [docs/SETUP.md](docs/SETUP.md); use this page as the
 checklist that gets you from "Pi boots" to "stack can start".
 
 ### What the stack assumes
@@ -130,8 +130,8 @@ sudo bash scripts/mount-drive.sh  # optional ext4 format + UUID fstab entry + mo
 ```
 
 The script mounts the drive at `/mnt/data`, creates `files/`, `filebrowser/` and `couchdb/`,
-and chowns them to UID/GID `1000`. Confirm it really is a separate mount — `install.sh` only
-warns here, and a missing mount means your data quietly lands on the OS drive:
+and chowns them to UID/GID `1000`. Confirm it really is a separate mount. `install.sh` only
+warns if it isn't, and a missing mount means your data quietly lands on the OS drive:
 
 ```bash
 mountpoint /mnt/data              # → /mnt/data is a mountpoint
@@ -142,8 +142,8 @@ df -h /mnt/data
 
 ### 5. Check the data layout
 
-`mount-drive.sh` and `install.sh` both create and chown this layout, so there is normally
-nothing to do here — just confirm it looks right:
+`mount-drive.sh` and `install.sh` both create and chown this layout, so there's normally
+nothing to do here. Just confirm it looks right:
 
 ```
 /mnt/data/
@@ -152,7 +152,7 @@ nothing to do here — just confirm it looks right:
 ├── couchdb/        → CouchDB data files (owned by uid 5984)
 ├── couchdb-etc/    → staged CouchDB config, owned by uid 5984 (see below)
 ├── backups/        → nightly archives (mode 0700)
-└── tmp/            → staging for backup/restore (never /tmp — that is a RAM tmpfs)
+└── tmp/            → staging for backup/restore (never /tmp, which is a RAM tmpfs)
 ```
 
 If you are creating it by hand:
@@ -176,7 +176,7 @@ find /opt/couchdb \! \( -user couchdb -group couchdb \) -exec chown -f couchdb:c
 ```
 
 A file mounted from the repo is owned by *you*, not uid 5984, so `find` matches it and tries
-to `chown` it — which fails on a read-only bind mount. `chown -f` suppresses the message but
+to `chown` it, which fails on a read-only bind mount. `chown -f` suppresses the message but
 not the exit status, `find` propagates it, and the entrypoint aborts **before CouchDB ever
 starts**. The symptom is brutal to debug: the container exits instantly, `docker compose logs
 couchdb` is completely empty, and the healthcheck just reports `restarting`.
@@ -231,8 +231,8 @@ Then edit `.env` and set at minimum:
 | `TS_AUTHKEY` | The reusable key from step 6 |
 | `TS_HOSTNAME` | The Pi's tailnet name, e.g. `homepi` (no dots) |
 | `TS_TAILNET` | Your tailnet, e.g. `tail1234.ts.net` |
-| `COUCHDB_PASSWORD` | A strong password — `install.sh` rejects the placeholder value |
-| `FILEBROWSER_ADMIN_PASSWORD` | A strong password — `install.sh` rejects the placeholder value |
+| `COUCHDB_PASSWORD` | A strong password (`install.sh` rejects the placeholder value) |
+| `FILEBROWSER_ADMIN_PASSWORD` | A strong password (`install.sh` rejects the placeholder value) |
 | `DATA_PATH` | `/mnt/data` |
 | `PUID` / `PGID` | Output of `id -u` / `id -g` |
 | `TZ` | e.g. `Europe/London` |
@@ -240,8 +240,8 @@ Then edit `.env` and set at minimum:
 `install.sh` applies `FILEBROWSER_ADMIN_USER` / `FILEBROWSER_ADMIN_PASSWORD` to the running
 container on every run. FileBrowser seeds its own admin account with a well-known default
 password on first start, which on a file server reachable by everyone on your tailnet is a
-real hole — so the reset is not optional, and re-running `install.sh` is also how you
-rotate that password later.
+real hole. So the reset isn't optional, and re-running `install.sh` is also how you rotate
+that password later.
 
 ---
 
@@ -263,8 +263,8 @@ sudo systemctl enable --now fail2ban
 ```
 
 > **Do not add `ufw allow in on tailscale0`.** In this stack Tailscale runs *inside a
-> container*, so `tailscale0` exists only in that container's network namespace — there is no
-> such interface on the host and the rule matches nothing. Tailnet traffic reaches the
+> container*, so `tailscale0` exists only in that container's network namespace. There's no
+> such interface on the host, and the rule matches nothing. Tailnet traffic reaches the
 > container as conntrack-established return traffic on the Docker bridge, which UFW already
 > permits. That rule only makes sense in the host-Tailscale variant (approach B in
 > [docs/TAILSCALE.md](docs/TAILSCALE.md)).
@@ -309,14 +309,14 @@ timedatectl show -p NTPSynchronized --value | grep -q yes && echo "OK   clock sy
 docker compose --env-file .env config >/dev/null 2>&1 && echo "OK   compose file valid" || echo "FAIL compose file valid"
 ```
 
-Once every line reads `OK`, continue with the Quick Start below — steps 1–3 are already done,
-so you can go straight to `bash scripts/install.sh`.
+Once every line reads `OK`, continue with the Quick Start below. Steps 1 through 3 are
+already done, so you can go straight to `bash scripts/install.sh`.
 
 ---
 
 ## Quick Start
 
-> Assumes the Pi is already prepared — see [Prepare the Pi](#prepare-the-pi) above.
+> Assumes the Pi is already prepared. See [Prepare the Pi](#prepare-the-pi) above.
 
 ```bash
 # 1. Clone
@@ -363,7 +363,7 @@ bash scripts/install-monitoring.sh
 ```
 
 That runs the check every 15 minutes, puts `homedrive-health` and `homedrive-status` on
-your `PATH`, and — if a screen is attached to the Pi — flashes the result onto it for five
+your `PATH`, and, if a screen is attached to the Pi, flashes the result onto it for five
 seconds after each run. See [docs/MONITORING.md](docs/MONITORING.md).
 
 The backup is still a crontab entry (`crontab -e`):
@@ -387,7 +387,7 @@ archive synced to someone else's cloud, or a compromised container.
 |---------|--------------|
 | No published host ports | Nothing in the stack is reachable from the LAN or the internet. Every request arrives through `tailscale serve`. |
 | Services bound to `127.0.0.1` | Inside the tailscale netns. Clients cannot bypass the HTTPS proxy and talk plaintext HTTP to FileBrowser or CouchDB over the tailnet IP. |
-| php-fpm bound to `127.0.0.1:9000` | The drive's most important binding. Sharing the tailscale netns means the image default of `listen = 9000` would publish an unauthenticated FastCGI socket — remote code execution — to the whole tailnet. Overridden in `config/nextcloud/zz-listen.conf`. |
+| php-fpm bound to `127.0.0.1:9000` | The drive's most important binding. Sharing the tailscale netns means the image default of `listen = 9000` would publish an unauthenticated FastCGI socket (that's remote code execution) to the whole tailnet. Overridden in `config/nextcloud/zz-listen.conf`. |
 | PostgreSQL and Redis on loopback, Redis password-protected | Same reason. Set explicitly in `command:`, never left on the image default. |
 | Nextcloud `trusted_proxies` | Without it every request appears to come from localhost, and the brute-force protection rate-limits all users together instead of the one guessing passwords. |
 | `serve`, never `funnel` | Tailnet-only. Funnel (public internet exposure) is not configured anywhere and should not be. |
@@ -406,7 +406,7 @@ archive synced to someone else's cloud, or a compromised container.
 - Anyone with a device on your tailnet is inside the boundary. Use Tailscale ACLs if you
   share the tailnet with other people.
 - CouchDB admin credentials are passed to the container as environment variables and are
-  visible in `docker inspect` to anyone with Docker socket access — which on this box is
+  visible in `docker inspect` to anyone with Docker socket access, which on this box is
   root-equivalent anyway.
 - End-to-end encryption of your notes is Obsidian LiveSync's passphrase, not this stack's.
   Set it, and the vault is unreadable even from a leaked backup archive.
@@ -418,8 +418,8 @@ archive synced to someone else's cloud, or a compromised container.
 ### Everything is healthy but nothing answers on port 443
 
 Almost always a bad `serve.json`. `containerboot` expands **only** `${TS_CERT_DOMAIN}` in
-that file — `${TS_HOSTNAME}`, `${TS_TAILNET}` and friends are passed through verbatim,
-producing a serve config for a hostname that does not exist.
+that file. `${TS_HOSTNAME}`, `${TS_TAILNET}` and friends are passed through verbatim,
+producing a serve config for a hostname that doesn't exist.
 
 ```bash
 docker exec homedrive-tailscale tailscale serve status
@@ -433,13 +433,13 @@ The `serve status` output must show your real MagicDNS name, not a literal `${..
 A TLS record failed its integrity check, meaning bytes were corrupted between the registry
 and the Pi. It is not a Docker or registry problem. On a Pi 5 the usual causes are, in order:
 
-1. **NIC offload bugs** — payloads mangled after checksums are computed, so Ethernet CRC and
-   TCP checksums never catch it. Test with
+1. **NIC offload bugs**: payloads get mangled after checksums are computed, so Ethernet CRC
+   and TCP checksums never catch it. Test with
    `sudo ethtool -K eth0 tso off gso off gro off tx off rx off`, and persist with
    `sudo nmcli connection modify "Wired connection 1" ethtool.feature-tso off ethtool.feature-gso off ethtool.feature-gro off ethtool.feature-tx off ethtool.feature-rx off`.
-2. **Under-voltage** — `vcgencmd get_throttled` must print `0x0`. A Pi 5 with a bus-powered
+2. **Under-voltage**: `vcgencmd get_throttled` must print `0x0`. A Pi 5 with a bus-powered
    SSD needs a real 5 V / 5 A supply.
-3. **USB 3 interference with 2.4 GHz Wi-Fi** — only if you are on `wlan0`.
+3. **USB 3 interference with 2.4 GHz Wi-Fi**: only relevant if you're on `wlan0`.
 
 `install.sh` retries the pull three times, and if the registry is still unreachable but every
 image is already on disk it continues with what it has rather than aborting. To skip the pull
@@ -487,7 +487,7 @@ echo "tun" | sudo tee /etc/modules-load.d/tun.conf  # persist across reboots
 ### CORS errors in Obsidian LiveSync
 - Check `config/couchdb/zz-homedrive.ini` has the correct origins.
 - Restart CouchDB: `docker compose restart couchdb`
-- Verify: `curl -I https://<host>/couchdb/` — look for `Access-Control-Allow-Origin` header.
+- Verify: `curl -I https://<host>/couchdb/` and look for the `Access-Control-Allow-Origin` header.
 
 ### External drive not mounting
 ```bash
@@ -510,24 +510,24 @@ docker compose logs couchdb
 - [Hardware guide](docs/HARDWARE.md)
 - [OS + Docker setup](docs/SETUP.md)
 - [Tailscale integration](docs/TAILSCALE.md)
-- [Obsidian sync](docs/OBSIDIAN.md) — seed device, second device, and troubleshooting
+- [Obsidian sync](docs/OBSIDIAN.md): seed device, second device, and troubleshooting
 - [Backups](docs/BACKUP.md)
-- [Monitoring](docs/MONITORING.md) — the health check, the status screen, and alerts
-- [The drive](docs/DRIVE.md) — optional Nextcloud: sync clients, sharing, and how the file
-  locking works
+- [Monitoring](docs/MONITORING.md): the health check, the status screen, and alerts
+- [The drive](docs/DRIVE.md): optional Nextcloud, covering sync clients, sharing, and how
+  the file locking works
 
 ## Scripts
 
 | Script | What it does |
 |--------|--------------|
 | `scripts/mount-drive.sh` | One-time: format and persistently mount the data drive |
-| `scripts/install.sh` | Bring the stack up. Idempotent — re-run it after any config change |
+| `scripts/install.sh` | Bring the stack up. Idempotent, so re-run it after any config change |
 | `scripts/install-drive.sh` | Install the optional Nextcloud drive: sync clients, sharing, file locking |
 | `scripts/drive-autostart.sh` | Turn the drive's start-at-boot on or off, and check which it is |
 | `scripts/install-monitoring.sh` | Install the health-check timer and the `homedrive-status` / `homedrive-health` commands |
 | `scripts/health-dashboard.sh` | The status screen: storage breakdown, transfer rates, file activity, Pi temperature and load. Also draws on a screen attached to the Pi |
 | `scripts/health-monitor.sh` | The unattended check: runs from a timer, quiet unless something is wrong, alerts via ntfy |
-| `scripts/healthcheck.sh` | Compatibility shim — forwards to `health-monitor.sh` |
+| `scripts/healthcheck.sh` | Compatibility shim, forwards to `health-monitor.sh` |
 | `scripts/backup.sh` | Nightly CouchDB + FileBrowser backup |
 | `scripts/restore.sh` | Restore from a backup archive |
 | `scripts/obsidian-check.sh` | Is Obsidian LiveSync actually reaching CouchDB? Document count and recent changes |

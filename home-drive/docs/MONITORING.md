@@ -1,4 +1,4 @@
-# Monitoring — Health Check and Status Screen
+# Monitoring: Health Check and Status Screen
 
 Two scripts, deliberately separate, because "tell me if something breaks" and "show me how
 the drive is doing" are different jobs with opposite requirements.
@@ -10,7 +10,7 @@ the drive is doing" are different jobs with opposite requirements.
 | Costs | Cheap; safe to run unattended | ~1s for the base view; walks a file tree only when asked |
 | Alerts | ntfy, with repeat suppression | Never |
 | Exit code | 0 ok / 1 warn / 2 fail | Always 0 |
-| Needs the repo | No — installed as `homedrive-health` | No — installed as `homedrive-status` |
+| Needs the repo | No, installed as `homedrive-health` | No, installed as `homedrive-status` |
 
 Both read the same collection library (`scripts/lib/stats.sh`), so they can never disagree
 about whether the drive is healthy.
@@ -44,7 +44,7 @@ Remove everything again:
 bash scripts/install-monitoring.sh --uninstall
 ```
 
-`/var/lib/homedrive` is left behind on uninstall — it holds your history and the manifest
+`/var/lib/homedrive` is left behind on uninstall. It holds your history and the manifest
 that makes deletion detection work.
 
 ---
@@ -73,12 +73,12 @@ From a checkout, the same scripts are `bash scripts/health-dashboard.sh` and
 ### Base view versus subsystem views
 
 **Storage, the Pi, transfer and the services are always shown.** They describe the machine,
-and it is the same machine whichever subsystem you came to look at.
+and it's the same machine whichever subsystem you came to look at.
 
 **File activity, backup and the itemised issue list are per-subsystem**, behind `--drive`
-and `--obsidian`. This is not only about screen space: walking a file tree's metadata is by
+and `--obsidian`. This isn't only about screen space: walking a file tree's metadata is by
 far the most expensive thing the dashboard does, and the flagless view skips both trees and
-returns in about a second. Ask for a subsystem and only that tree is walked.
+returns in about a second. Ask for a subsystem and only that tree gets walked.
 
 Nothing is hidden dangerously. When the issue list is off and something is wrong, the base
 view still ends with a line like:
@@ -96,12 +96,12 @@ vanished is one of the things it exists for.
 
 ## What is measured
 
-**Services** — every container's status, health, restart count, uptime, and (on the
+**Services**: every container's status, health, restart count, uptime, and (on the
 dashboard) its CPU and memory. Then the things a container can be "running" while failing
 to do: CouchDB answering `/_up`, the admin credentials still being accepted, FileBrowser
 answering on `:8080`, and Tailscale's `BackendState` with the peer count.
 
-**Storage** — usage of the data drive and the OS drive with free space, filesystem and
+**Storage**: usage of the data drive and the OS drive with free space, filesystem and
 device; inode usage, which fills before bytes do on a vault of many small notes; a
 breakdown of where the space went (`files/`, `couchdb/`, `filebrowser/`, `backups/`); and
 SMART health, drive temperature, power-on hours and reallocated sectors where `smartctl`
@@ -111,17 +111,17 @@ The check that matters most is whether `DATA_PATH` is a *mount point*. If the ex
 drive drops off the USB bus, the path still exists as an empty directory on the OS drive,
 and nothing else on the box will tell you.
 
-**Raspberry Pi** — SoC temperature, CPU utilisation, load average against core count,
+**Raspberry Pi**: SoC temperature, CPU utilisation, load average against core count,
 memory and swap, fan RPM, uptime, and the throttling flags from `vcgencmd get_throttled`.
-Those flags are what explain a Pi that is mysteriously slow or keeps dropping USB drives:
+Those flags are what explain a Pi that's mysteriously slow or keeps dropping USB drives:
 under-voltage *now* is a critical alert, under-voltage *since boot* is a warning.
 
-**Transfer** — download and upload rates per interface, plus disk read/write throughput.
-The dashboard samples for one second, so it shows what is happening right now; the monitor
-diffs its counters against the previous run, so its figures are averages over the interval
-and are what the sparklines are built from.
+**Transfer**: download and upload rates per interface, plus disk read/write throughput.
+The dashboard samples for one second, so it shows what's happening right now; the monitor
+diffs its counters against the previous run, so its figures are averages over the interval,
+and those averages are what the sparklines are built from.
 
-**File activity** — total file count and size, the most recently written files, and what
+**File activity**: total file count and size, the most recently written files, and what
 was **added, modified and deleted** since the last check. Deletions are the reason this
 keeps a manifest: `find` can list what exists, never what stopped existing. A mass deletion
 raises a warning while the deleted files are still inside the backup retention window.
@@ -130,22 +130,22 @@ Two trees are tracked independently, with the same logic and separate state:
 
 | Flag | Tree | Walked |
 |------|------|--------|
-| `--obsidian` | `$DATA_PATH/files` — FileBrowser and anything you put there | on the host |
+| `--obsidian` | `$DATA_PATH/files`, FileBrowser and anything you put there | on the host |
 | `--drive` | Nextcloud's `data/<user>/files` | inside the container |
 
-The drive's tree cannot be walked from the host at all: it is mode 750 owned by the web
+The drive's tree can't be walked from the host at all: it's mode 750 owned by the web
 user, so the account running the health check would get nothing but permission errors.
-Only `data/<user>/files` is counted — `files_versions`, `files_trashbin` and `appdata_*`
+Only `data/<user>/files` is counted. `files_versions`, `files_trashbin` and `appdata_*`
 live under the same root, and including them would report every single edit twice (once as
 the file, once as the version it just created) and every deletion as an addition in the
 trash.
 
-**Sync** — CouchDB document count, database size, and the change in `update_seq` since the
-last check. That last number is the honest answer to "is anything actually syncing?" — the
+**Sync**: CouchDB document count, database size, and the change in `update_seq` since the
+last check. That last number is the honest answer to "is anything actually syncing?" The
 document count barely moves when you edit a note, but the update sequence always does.
 `scripts/obsidian-check.sh` remains the tool for debugging one specific device.
 
-**Backups** — newest archive, its age and size, how many are kept and their total size.
+**Backups**: newest archive, its age and size, how many are kept and their total size.
 Warns at 26 hours and fails at 48, which is what catches a nightly job that quietly stopped.
 
 ---
@@ -203,31 +203,31 @@ It redraws every 10 seconds. Stopping the service gives the console back.
 
 Set `NTFY_URL` in `.env` and problems arrive as push notifications.
 
-Repeat suppression matters more than it looks. An hourly check against a drive that has
-been full since Tuesday would send 168 identical notifications a week — and you would mute
-the topic, right before the one alert that mattered. So a given problem notifies once, then
-not again for `HEALTH_ALERT_REPEAT_HOURS` (default 6) unless what is wrong changes. A single
+Repeat suppression matters more than it looks. An hourly check against a drive that's
+been full since Tuesday would send 168 identical notifications a week, and you'd mute the
+topic right before the one alert that mattered. So a given problem notifies once, then
+not again for `HEALTH_ALERT_REPEAT_HOURS` (default 6) unless what's wrong changes. A single
 "recovered" message is sent when everything passes again.
 
 CPU, memory and load spikes are coloured on the dashboard but do **not** alert: a file
 server under load is doing its job. Set `HEALTH_ALERT_ON_RESOURCE=true` if you want them to.
 
-Without `NTFY_URL` the exit status still does the work — cron mails you on any non-zero
-exit, and `systemctl status homedrive-health` shows the last result.
+Without `NTFY_URL` the exit status still does the work: cron mails you on any non-zero exit,
+and `systemctl status homedrive-health` shows the last result.
 
 ---
 
 ## Cost of the file scan
 
 The activity scan walks the metadata of every file under `$DATA_PATH/files`. On an SSD with
-a few hundred thousand files that is a second or two; it is nonetheless:
+a few hundred thousand files that's a second or two, but it's nonetheless:
 
-- **cached** — reused for `HEALTH_SCAN_INTERVAL_MIN` (default 30) minutes, so a dashboard
+- **cached**: reused for `HEALTH_SCAN_INTERVAL_MIN` (default 30) minutes, so a dashboard
   refresh never triggers a new walk. The dashboard marks reused figures `[cached]`; `--scan`
   forces a fresh one.
-- **time-boxed** — abandoned after `HEALTH_SCAN_TIMEOUT` (default 90 s), reporting partial
+- **time-boxed**: abandoned after `HEALTH_SCAN_TIMEOUT` (default 90 s), reporting partial
   figures and a warning rather than hanging the check.
-- **bounded** — above `HEALTH_SCAN_MAX_FILES` (default 200 000) the added/deleted/modified
+- **bounded**: above `HEALTH_SCAN_MAX_FILES` (default 200 000) the added/deleted/modified
   diff is skipped, because it holds one entry per file in memory. Counts and sizes are still
   reported.
 
@@ -242,9 +242,9 @@ Everything lives in `/var/lib/homedrive` (override with `HEALTH_STATE_DIR`):
 
 | File | What it is |
 |------|-----------|
-| `counters.env` | Last run's network/disk/CPU counters — the basis of every rate |
+| `counters.env` | Last run's network/disk/CPU counters, the basis of every rate |
 | `history.csv` | Rolling samples for the sparklines (capped at 240 points) |
-| `live.csv` | Same, for `--watch` sessions, kept separate so 5-second samples do not pollute the long-term history |
+| `live.csv` | Same, for `--watch` sessions, kept separate so 5-second samples don't pollute the long-term history |
 | `files-manifest.tsv` `drive-manifest.tsv` | Path, mtime and size of every file at the last scan, one per tree |
 | `files-added.txt` `files-deleted.txt` `files-modified.txt` | The last diff of the FileBrowser tree |
 | `drive-added.txt` `drive-deleted.txt` `drive-modified.txt` | The same for the Nextcloud tree |
@@ -253,12 +253,12 @@ Everything lives in `/var/lib/homedrive` (override with `HEALTH_STATE_DIR`):
 | `status.txt` | One-line summary (`homedrive-health --status` prints this) |
 | `alert.env` | Which alert was last sent, and when |
 
-It is deliberately **not** on the data drive: the state has to survive the drive going
-missing, since that is exactly when you need the history.
+It's deliberately **not** on the data drive: the state has to survive the drive going
+missing, since that's exactly when you need the history.
 
 ---
 
 ## `healthcheck.sh`
 
-Still there, and still works — it forwards to `health-monitor.sh --verbose` so an existing
+Still there, and still works: it forwards to `health-monitor.sh --verbose` so an existing
 crontab entry keeps running. New installs should use `install-monitoring.sh`.

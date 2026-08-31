@@ -1,6 +1,6 @@
-// PiHub / PiTune / Home Drive — shared tailnet ACL policy (template).
+// PiHub / PiTune / Home Drive: shared tailnet ACL policy (template).
 //
-// This is NOT applied automatically — Tailscale ACLs live in the Tailscale
+// This is NOT applied automatically. Tailscale ACLs live in the Tailscale
 // admin console (or are pushed via its API), not in this repo. Paste this
 // into https://login.tailscale.com/admin/acls (or your coordination
 // server's equivalent), replace every REPLACE-ME placeholder with your own
@@ -9,36 +9,36 @@
 // ── What this policy actually does ──────────────────────────────────────
 // Tailscale's own default policy is permissive: every device in the
 // tailnet can reach every other device, on every port, once it's an
-// accepted member. That default is almost certainly wider than you want —
+// accepted member. That default is almost certainly wider than you want;
 // see ../docs/DEVICE-ONBOARDING.md for why. This policy narrows it to:
 //   1. Only devices tagged tag:approved-device can reach anything at all.
 //   2. Even those can only reach each server on the specific port(s) its
-//      own `tailscale serve` actually answers on — see the per-service
+//      own `tailscale serve` actually answers on. See the per-service
 //      rules below. Every other port a service happens to have open
 //      (Navidrome's 4533, Jellyfin's 8096, PiHub's raw nginx :80, etc.)
 //      stays unreachable over the tailnet even though the node itself is a
-//      tailnet member — those are LAN-only by design; joining a tailnet
+//      tailnet member. Those are LAN-only by design; joining a tailnet
 //      does not change that unless you let it, and this policy doesn't.
 //   3. tagOwners below controls who is allowed to actually apply these
-//      tags to a device in the first place — replace the placeholder
+//      tags to a device in the first place. Replace the placeholder
 //      email with your own Tailscale login. Without this block, nobody
 //      (including you) can tag a device at all.
 //
 // ── One tag per SERVER, not one tag for everything ──────────────────────
 // Each Pi/stack advertises its own tag (tag:home-drive-server,
 // tag:pitune-server, tag:pihub-server) rather than a single shared
-// tag:home-server — three separate ACL rules below, one per service, each
+// tag:home-server. Three separate ACL rules below, one per service, each
 // scoped to exactly the port(s) that service's own `tailscale serve`
 // answers on:
 //   - home-drive:  443 (FileBrowser + CouchDB), 8443 (CouchDB/Fauxton at
-//     the root — see home-drive/docs/TAILSCALE.md), 9443 (Nextcloud).
+//     the root, see home-drive/docs/TAILSCALE.md), 9443 (Nextcloud).
 //   - pitune:      443 only.
 //   - pihub:       443 only.
 // This also means a device only needs to be granted the SPECIFIC service
-// rules it should reach — see "Scoping a device to one service" below.
+// rules it should reach. See "Scoping a device to one service" below.
 //
 // ── The "only devices I approve" requirement, and its real mechanism ────
-// Tags are not something a device can grant itself — only whichever
+// Tags are not something a device can grant itself. Only whichever
 // login(s) you list under tagOwners can apply tag:approved-device to a
 // device (via `tailscale up --advertise-tags=tag:approved-device`, or from
 // the admin console's device list). Combine this with tailnet-wide
@@ -49,8 +49,8 @@
 // (specifically, not the device itself) tag it tag:approved-device. See
 // ../docs/DEVICE-ONBOARDING.md for the full setup, including the
 // recommended "enroll it while physically on your home Wi-Fi, approve and
-// tag it, then it also works from anywhere" workflow — Tailscale itself
-// has no concept of "was on the LAN during setup", so this workflow is
+// tag it, then it also works from anywhere" workflow. Tailscale itself
+// has no concept of "was on the LAN during setup," so this workflow is
 // what actually delivers that property in practice.
 //
 // ── Scoping a device to one service only (e.g. a guest) ─────────────────
@@ -60,14 +60,14 @@
 // device tag (e.g. tag:approved-device-pitune) to tagOwners, give it its
 // own single ACL rule against tag:pitune-server only, and tag their
 // device with that instead of tag:approved-device. Never add
-// tag:approved-device itself to a device you don't want full access for —
-// it is intentionally "all three, full stop".
+// tag:approved-device itself to a device you don't want full access for.
+// It is intentionally "all three, full stop".
 //
 // ── "Only 2 devices at once" ─────────────────────────────────────────────
-// Deliberately NOT implemented as a live concurrent-connection counter —
-// see ../README.md's "Why not a literal concurrent-connection cap" section
+// Deliberately NOT implemented as a live concurrent-connection counter.
+// See ../README.md's "Why not a literal concurrent-connection cap" section
 // for the reasoning. The way this policy actually bounds it: tag exactly
-// as many devices tag:approved-device as you want allowed, ever — tag two
+// as many devices tag:approved-device as you want allowed, ever. Tag two
 // devices and *only* those two can reach anything, full stop, not "the
 // first two to connect at a given moment." Untag a device (or remove it
 // from the tailnet) to revoke it; tag a different one to swap it in.
@@ -98,17 +98,17 @@
 	],
 
 	// Belt-and-suspenders default-deny reminder: any src/dst pair not
-	// listed in "acls" above is denied automatically — Tailscale ACLs are
-	// allowlists, there is no separate "deny" rule needed. If a device you
+	// listed in "acls" above is denied automatically. Tailscale ACLs are
+	// allowlists; there is no separate "deny" rule needed. If a device you
 	// expect to work can't reach a server, the fix is almost always "it
 	// isn't tagged tag:approved-device yet, or that Pi isn't advertising
-	// its own tag:*-server tag yet" — not a missing deny rule.
+	// its own tag:*-server tag yet," not a missing deny rule.
 
 	// Optional but recommended: require the tags above to be applied
 	// before a node can do anything at all, closing the gap where a freshly
 	// approved but not-yet-tagged device would otherwise inherit whatever
-	// your tailnet's default (no rule matches -> deny) already handles —
-	// this "grants" block is intentionally left out because the deny-by-
+	// your tailnet's default (no rule matches -> deny) already handles.
+	// This "grants" block is intentionally left out because the deny-by-
 	// default behavior above already covers it; don't add a blanket
 	// "tag:*-server" -> "tag:approved-device" rule unless you have a
 	// concrete reason a server needs to reach back to a client, which none

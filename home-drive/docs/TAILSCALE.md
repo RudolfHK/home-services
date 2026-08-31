@@ -1,7 +1,7 @@
 # Tailscale Integration Guide
 
 This stack uses Tailscale to provide **private, encrypted access** to FileBrowser and
-CouchDB from any device — phone, laptop, or tablet — without opening any ports on your
+CouchDB from any device (phone, laptop, or tablet) without opening any ports on your
 router or exposing anything to the public internet.
 
 ---
@@ -24,7 +24,7 @@ The **tailscale container** runs in the same Docker network namespace as the fil
 and couchdb containers.  The `tailscale serve` command inside that container creates an
 HTTPS reverse proxy that routes incoming tailnet connections to the correct service.
 
-No Docker ports are published to the host — the only way in is through the tailnet.
+No Docker ports are published to the host. The only way in is through the tailnet.
 
 ---
 
@@ -45,48 +45,48 @@ to 100 devices, which is more than enough for a home setup.
 2. Click **Generate auth key**
 3. Settings:
    - **Description:** homepi-docker
-   - **Reusable:** ❌ — leave unticked. `TS_STATE_DIR` (see
+   - **Reusable:** ❌, leave unticked. `TS_STATE_DIR` (see
      `docker-compose.yml`) persists this container's identity in a named
      volume, so the key is only ever needed for the very first
      `tailscale up`; every restart after that re-authenticates from that
      cached state, not the key. A reusable key is a standing credential
      that, if it ever leaks (a stray backup, a compromised workstation
      it was pasted on), lets anyone enroll an arbitrary device into your
-     tailnet — a non-reusable one is worthless after this one use.
-   - **Expiry:** as short as the console allows (an hour is plenty — you're
-     about to use it immediately).
-   - **Tags:** the key-generation form has its own `Tags` field — you can
+     tailnet. A non-reusable one is worthless after this one use.
+   - **Expiry:** as short as the console allows (an hour is plenty, since
+     you're about to use it immediately).
+   - **Tags:** the key-generation form has its own `Tags` field, so you can
      set `tag:home-drive-server` there, or leave it and set it via
      `TS_EXTRA_ARGS` instead (see below). Either way, `tag:home-drive-server`
      is what makes step 2b ("Apply the shared ACL") grant this node
      anything at all.
-4. Copy the key — it looks like `tskey-auth-XXXX…`
+4. Copy the key. It looks like `tskey-auth-XXXX…`
 5. Paste it into `.env` as `TS_AUTHKEY=tskey-auth-...`. If the key expires
-   before you run `docker compose up`, just generate a fresh one — nothing
+   before you run `docker compose up`, just generate a fresh one; nothing
    about a short-lived key changes any other step here.
 
 ### 2b. Apply the shared ACL and advertise this node's tag
 
 This step exists because of a real trap: without it, once this Pi joins
-your tailnet, **every** tailnet member can reach **every** port here —
-FileBrowser, CouchDB, and Nextcloud's PHP-FPM `9000` and nginx `8081` (both
-already loopback-bound specifically to survive this scenario, but still
-better closed off at the network layer too), not just the intended `443`/
-`8443`/`9443`. Fix that before going further:
+your tailnet, **every** tailnet member can reach **every** port here,
+including FileBrowser, CouchDB, and Nextcloud's PHP-FPM `9000` and nginx
+`8081` (both already loopback-bound specifically to survive this scenario,
+but still better closed off at the network layer too), not just the
+intended `443`/`8443`/`9443`. Fix that before going further:
 
 1. Paste [`../../tailscale/acl-policy.hujson`](../../tailscale/acl-policy.hujson)
    into **Access controls** in the admin console (with your own login in
-   place of every `REPLACE-ME-your-login@example.com`) — it grants
+   place of every `REPLACE-ME-your-login@example.com`). It grants
    `tag:approved-device` access to `tag:home-drive-server` on exactly
    `443`, `8443`, and `9443`, nothing else.
 2. Make sure `TS_EXTRA_ARGS=--advertise-tags=tag:home-drive-server` is set
-   in `.env` (see `.env.example`) *before* the first `tailscale up` — a
+   in `.env` (see `.env.example`) *before* the first `tailscale up`. A
    node with no tag doesn't match that ACL rule at all and is denied by
    default, same as a device with no `tag:approved-device`.
 3. See [`../../tailscale/docs/DEVICE-ONBOARDING.md`](../../tailscale/docs/DEVICE-ONBOARDING.md)
    for approving and tagging the *devices* (phones, laptops) that should
-   be allowed to reach this node — a separate step from tagging the node
-   itself.
+   be allowed to reach this node. That's a separate step from tagging the
+   node itself.
 
 ### 3. Enable MagicDNS and HTTPS
 
@@ -122,11 +122,10 @@ The current configuration maps:
 `containerboot` (the tailscale image's entrypoint) substitutes exactly one placeholder in
 this file: `${TS_CERT_DOMAIN}`, which it replaces with the node's MagicDNS name.
 
-Anything else — `${TS_HOSTNAME}`, `${TS_TAILNET}`, any other environment variable — is
-**not** expanded. It reaches `tailscaled` verbatim, producing a serve config keyed on a
-hostname that does not exist. The symptom is nasty: every container reports healthy, the
-node shows up in the admin console, and nothing answers on port 443. Always use
-`${TS_CERT_DOMAIN}`.
+Anything else, like `${TS_HOSTNAME}` or `${TS_TAILNET}`, is **not** expanded. It reaches
+`tailscaled` verbatim, producing a serve config keyed on a hostname that doesn't exist. The
+symptom is nasty: every container reports healthy, the node shows up in the admin console,
+and nothing answers on port 443. Always use `${TS_CERT_DOMAIN}`.
 
 JSON has no comment syntax and `tailscaled` validates the file, so keep notes in
 `config/tailscale/README.md` rather than adding keys to `serve.json`.
@@ -134,7 +133,7 @@ JSON has no comment syntax and `tailscaled` validates the file, so keep notes in
 #### Why CouchDB is also served on 8443
 
 Tailscale strips the mount-point prefix before proxying, so CouchDB's REST API works fine
-under `/couchdb/` — that is the URI to give Obsidian LiveSync.
+under `/couchdb/`. That's the URI to give Obsidian LiveSync.
 
 Fauxton (CouchDB's admin UI) does **not** work under a prefix: its bundle requests absolute
 paths such as `/_all_dbs`, which on port 443 resolve to `/` and are routed to FileBrowser
@@ -146,7 +145,7 @@ To verify the serve config is active:
 docker exec homedrive-tailscale tailscale serve status
 ```
 
-Both ports use `serve`, not `funnel` — they are reachable from your tailnet only, never
+Both ports use `serve`, not `funnel`, so they're reachable from your tailnet only, never
 from the public internet.
 
 ---
@@ -200,7 +199,7 @@ services are reachable from the Pi's LAN interface too, not just the tailnet.
 
 1. Install **Tailscale** on your phone (iOS App Store / Google Play).
 2. Sign in with the same Tailscale account.
-3. Open `https://homepi.<tailnet>.ts.net/` in your mobile browser — FileBrowser loads.
+3. Open `https://homepi.<tailnet>.ts.net/` in your mobile browser. FileBrowser loads.
 4. For Obsidian LiveSync, the CouchDB URL is:
    `https://homepi.<tailnet>.ts.net/couchdb/`
 5. For the CouchDB admin UI, use `https://homepi.<tailnet>.ts.net:8443/_utils/`
@@ -215,7 +214,7 @@ services are reachable from the Pi's LAN interface too, not just the tailnet.
 | CouchDB API      | `https://<hostname>.<tailnet>.ts.net/couchdb/`            | 5984          |
 | CouchDB Fauxton  | `https://<hostname>.<tailnet>.ts.net:8443/_utils/`        | 5984          |
 
-Fauxton is on **8443**, not under `/couchdb/` — see the `serve.json` section above.
+Fauxton is on **8443**, not under `/couchdb/`. See the `serve.json` section above.
 
 ---
 
