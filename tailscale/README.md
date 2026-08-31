@@ -26,7 +26,7 @@ behavior are unchanged.
    section.
 3. Onboard each personal device per `docs/DEVICE-ONBOARDING.md`'s workflow.
 
-## Why the ACL restricts every server to port 443 only
+## Why the ACL restricts every server to its own serve port(s) only
 
 Joining a tailnet doesn't hide a node's other listening ports from other
 tailnet members — by default, any accepted device can reach any port on any
@@ -36,9 +36,31 @@ before Tailscale's own HTTPS proxy) specifically so you don't need a VPN
 just to create a Navidrome account or run Jellyfin's setup wizard at home.
 Without an ACL, once these Pis join the tailnet, every one of those admin
 ports would *also* become reachable from anywhere in the tailnet — a much
-bigger exposure than "just the app". `acl-policy.hujson` closes this by
-only ever granting `tag:approved-device` → `tag:home-server:443`: the one
-HTTPS endpoint each stack's `tailscale serve` answers on. Nothing else.
+bigger exposure than "just the app". `acl-policy.hujson` closes this with
+one rule per service, each scoped to exactly the port(s) that service's own
+`tailscale serve` answers on:
+
+| Server tag | Ports granted | Why |
+|---|---|---|
+| `tag:home-drive-server` | `443`, `8443`, `9443` | FileBrowser + CouchDB (443), Fauxton at the root (8443), Nextcloud (9443) — see `home-drive/docs/TAILSCALE.md`. |
+| `tag:pitune-server` | `443` | The one endpoint `pitune/tailscale/serve.json` answers on. |
+| `tag:pihub-server` | `443` | The one endpoint `pihub/tailscale/serve.json` answers on. |
+
+Nothing else is granted on any of these nodes — not Navidrome's `4533`, not
+Jellyfin's `8096`, not PiHub's raw nginx `80`.
+
+### One tag per server, not one tag for the whole repo
+
+Earlier drafts of this policy used a single `tag:home-server` for all three
+Pis. That has a real cost: it makes it *impossible* to grant a device
+access to just one service — tag a device `tag:approved-device` and it can
+reach home-drive, PiTune, *and* PiHub, with no way to hand out less. If you
+ever want to give a guest device PiTune's music without also handing them
+your personal Nextcloud, you need the services to carry different tags in
+the first place — which is why each Pi now advertises its own
+`tag:*-server` tag, and why `docs/DEVICE-ONBOARDING.md` shows how to add a
+second, narrower device tag (e.g. `tag:approved-device-pitune`) scoped to
+just one service's ACL rule.
 
 ## Why not a literal concurrent-connection cap
 

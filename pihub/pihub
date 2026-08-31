@@ -32,7 +32,7 @@ services_for() {
     homepage)  echo "homepage" ;;
     pitune)    echo "navidrome pitune-backend pitune-frontend" ;;
     jellyfin)  echo "jellyfin" ;;
-    tailscale) echo "tailscale" ;;
+    tailscale) echo "tailscale-preflight tailscale" ;;
     *)         echo "" ;;
   esac
 }

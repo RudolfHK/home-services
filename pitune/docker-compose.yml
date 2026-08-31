@@ -181,6 +181,39 @@ services:
   # port it has open — including NAVIDROME_PORT and PITUNE_PORT themselves —
   # becomes reachable by any tailnet member, not just the :443 endpoint
   # below. See ../tailscale/README.md.
+
+  # Hard gate, not just a doc warning: refuses to let `tailscale` (below)
+  # start at all if DOWNLOAD_ENABLED=true but API_TOKEN is unset. Without
+  # this, enabling remote access on a box where DOWNLOAD_ENABLED was turned
+  # on for local convenience silently hands every approved tailnet device
+  # an unauthenticated /api/save — this container exits 1 with an explicit
+  # error instead, and Compose refuses to start `tailscale` when it does
+  # (see that service's `depends_on: condition: service_completed_successfully`).
+  # A one-shot check like this can't live inside the `tailscale/tailscale`
+  # image itself, hence the separate tiny container.
+  tailscale-preflight:
+    profiles: ["tailscale"]
+    image: alpine:3.20
+    container_name: pitune-tailscale-preflight
+    restart: "no"
+    logging: *default-logging
+    environment:
+      API_TOKEN: ${API_TOKEN:-}
+      DOWNLOAD_ENABLED: ${DOWNLOAD_ENABLED:-false}
+    command:
+      - sh
+      - -c
+      - |
+        if [ "$$DOWNLOAD_ENABLED" = "true" ] && [ -z "$$API_TOKEN" ]; then
+          echo "FATAL: DOWNLOAD_ENABLED=true but API_TOKEN is unset, and the" >&2
+          echo "tailscale profile is starting. Once this node is reachable" >&2
+          echo "from outside the LAN, /api/save would have NO auth at all," >&2
+          echo "reachable by every approved tailnet device. Set API_TOKEN in" >&2
+          echo ".env (see .env.example), or set DOWNLOAD_ENABLED=false." >&2
+          exit 1
+        fi
+        echo "tailscale-preflight: OK."
+
   tailscale:
     profiles: ["tailscale"]
     image: tailscale/tailscale:${TAILSCALE_TAG:-latest}
@@ -189,13 +222,17 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+    depends_on:
+      tailscale-preflight:
+        condition: service_completed_successfully
+
     environment:
       TS_AUTHKEY: ${TS_AUTHKEY:-}
       TS_HOSTNAME: ${TS_HOSTNAME:-pitune}
       TS_SERVE_CONFIG: /config/tailscale/serve.json
       TS_USERSPACE: "false"
       TS_ACCEPT_DNS: "true"
-      # e.g. --advertise-tags=tag:home-server — see ../tailscale/acl-policy.hujson.
+      # e.g. --advertise-tags=tag:pitune-server — see ../tailscale/acl-policy.hujson.
       TS_EXTRA_ARGS: ${TS_EXTRA_ARGS:-}
       TS_STATE_DIR: /var/lib/tailscale
       TZ: ${TZ}

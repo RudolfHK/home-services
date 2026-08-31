@@ -12,17 +12,30 @@
 // accepted member. That default is almost certainly wider than you want —
 // see ../docs/DEVICE-ONBOARDING.md for why. This policy narrows it to:
 //   1. Only devices tagged tag:approved-device can reach anything at all.
-//   2. Even those can only reach tag:home-server on port 443 — the one
-//      port each stack's `tailscale serve` actually answers on. Every
-//      other port a service happens to have open (Navidrome's 4533,
-//      Jellyfin's 8096, PiHub's raw nginx :80, etc.) stays unreachable
-//      over the tailnet even though the node itself is a tailnet member —
-//      those are LAN-only by design; joining a tailnet does not change
-//      that unless you let it, and this policy doesn't.
+//   2. Even those can only reach each server on the specific port(s) its
+//      own `tailscale serve` actually answers on — see the per-service
+//      rules below. Every other port a service happens to have open
+//      (Navidrome's 4533, Jellyfin's 8096, PiHub's raw nginx :80, etc.)
+//      stays unreachable over the tailnet even though the node itself is a
+//      tailnet member — those are LAN-only by design; joining a tailnet
+//      does not change that unless you let it, and this policy doesn't.
 //   3. tagOwners below controls who is allowed to actually apply these
 //      tags to a device in the first place — replace the placeholder
 //      email with your own Tailscale login. Without this block, nobody
 //      (including you) can tag a device at all.
+//
+// ── One tag per SERVER, not one tag for everything ──────────────────────
+// Each Pi/stack advertises its own tag (tag:home-drive-server,
+// tag:pitune-server, tag:pihub-server) rather than a single shared
+// tag:home-server — three separate ACL rules below, one per service, each
+// scoped to exactly the port(s) that service's own `tailscale serve`
+// answers on:
+//   - home-drive:  443 (FileBrowser + CouchDB), 8443 (CouchDB/Fauxton at
+//     the root — see home-drive/docs/TAILSCALE.md), 9443 (Nextcloud).
+//   - pitune:      443 only.
+//   - pihub:       443 only.
+// This also means a device only needs to be granted the SPECIFIC service
+// rules it should reach — see "Scoping a device to one service" below.
 //
 // ── The "only devices I approve" requirement, and its real mechanism ────
 // Tags are not something a device can grant itself — only whichever
@@ -40,6 +53,16 @@
 // has no concept of "was on the LAN during setup", so this workflow is
 // what actually delivers that property in practice.
 //
+// ── Scoping a device to one service only (e.g. a guest) ─────────────────
+// tag:approved-device below is granted all three services by default,
+// which is the common case for your own personal devices. To hand a
+// guest access to just PiTune's music and nothing else: add a second
+// device tag (e.g. tag:approved-device-pitune) to tagOwners, give it its
+// own single ACL rule against tag:pitune-server only, and tag their
+// device with that instead of tag:approved-device. Never add
+// tag:approved-device itself to a device you don't want full access for —
+// it is intentionally "all three, full stop".
+//
 // ── "Only 2 devices at once" ─────────────────────────────────────────────
 // Deliberately NOT implemented as a live concurrent-connection counter —
 // see ../README.md's "Why not a literal concurrent-connection cap" section
@@ -50,15 +73,27 @@
 // from the tailnet) to revoke it; tag a different one to swap it in.
 {
 	"tagOwners": {
-		"tag:home-server":     ["REPLACE-ME-your-login@example.com"],
-		"tag:approved-device": ["REPLACE-ME-your-login@example.com"],
+		"tag:home-drive-server": ["REPLACE-ME-your-login@example.com"],
+		"tag:pitune-server":     ["REPLACE-ME-your-login@example.com"],
+		"tag:pihub-server":      ["REPLACE-ME-your-login@example.com"],
+		"tag:approved-device":   ["REPLACE-ME-your-login@example.com"],
 	},
 
 	"acls": [
 		{
 			"action": "accept",
 			"src":    ["tag:approved-device"],
-			"dst":    ["tag:home-server:443"],
+			"dst":    ["tag:home-drive-server:443", "tag:home-drive-server:8443", "tag:home-drive-server:9443"],
+		},
+		{
+			"action": "accept",
+			"src":    ["tag:approved-device"],
+			"dst":    ["tag:pitune-server:443"],
+		},
+		{
+			"action": "accept",
+			"src":    ["tag:approved-device"],
+			"dst":    ["tag:pihub-server:443"],
 		},
 	],
 
@@ -66,15 +101,16 @@
 	// listed in "acls" above is denied automatically — Tailscale ACLs are
 	// allowlists, there is no separate "deny" rule needed. If a device you
 	// expect to work can't reach a server, the fix is almost always "it
-	// isn't tagged tag:approved-device yet", not a missing deny rule.
+	// isn't tagged tag:approved-device yet, or that Pi isn't advertising
+	// its own tag:*-server tag yet" — not a missing deny rule.
 
-	// Optional but recommended: require the two tags above to be applied
+	// Optional but recommended: require the tags above to be applied
 	// before a node can do anything at all, closing the gap where a freshly
 	// approved but not-yet-tagged device would otherwise inherit whatever
 	// your tailnet's default (no rule matches -> deny) already handles —
 	// this "grants" block is intentionally left out because the deny-by-
 	// default behavior above already covers it; don't add a blanket
-	// "tag:home-server" -> "tag:approved-device" rule unless you have a
+	// "tag:*-server" -> "tag:approved-device" rule unless you have a
 	// concrete reason a server needs to reach back to a client, which none
 	// of these stacks do.
 }

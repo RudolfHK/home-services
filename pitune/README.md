@@ -225,7 +225,8 @@ rather than exposing `PITUNE_PORT` directly to the internet.
 | `no-new-privileges` on every container | Standard defense-in-depth even though nothing here needs extra capabilities. |
 | Video-ID validation in the backend | YouTube video IDs are checked against `^[A-Za-z0-9_-]{11}$` before being placed on a `yt-dlp` command line, so a crafted ID can't be parsed as a CLI flag. |
 | `.env` never committed | Holds no long-lived secrets besides `API_TOKEN` and, if you enable it, `TS_AUTHKEY` — keep it out of git regardless, see `.gitignore`. |
-| Tailscale ACL allow-list (`../tailscale/acl-policy.hujson`), off by default | Only used if you opt into the `tailscale` profile — see [Remote access via Tailscale](#remote-access-via-tailscale-optional). Grants only `tag:approved-device` sources access to port 443, not the whole node. |
+| Tailscale ACL allow-list (`../tailscale/acl-policy.hujson`), off by default | Only used if you opt into the `tailscale` profile — see [Remote access via Tailscale](#remote-access-via-tailscale-optional). Grants only `tag:approved-device` sources access to `tag:pitune-server:443` — a tag scoped to this stack alone, not the whole node and not shared with home-drive/PiHub. |
+| `tailscale-preflight` container, only in the `tailscale` profile | Refuses to let `tailscale` start if `DOWNLOAD_ENABLED=true` but `API_TOKEN` is unset — see [Remote access via Tailscale](#remote-access-via-tailscale-optional). A hard gate, not just a warning, since this profile is what turns an unauthenticated `/api/save` from a LAN-only convenience into a remote exposure. |
 
 **`NAVIDROME_PORT` has no proxy in front of it.** Unlike `PITUNE_PORT`
 (nginx: rate-limit-able, gets the headers above), Navidrome's direct port is
@@ -247,7 +248,7 @@ is included:
 
 ```bash
 cp .env.example .env   # if you haven't already
-nano .env               # set TS_AUTHKEY (see below), leave TS_HOSTNAME/TS_EXTRA_ARGS as-is
+nano .env               # set API_TOKEN (only matters if DOWNLOAD_ENABLED=true) and TS_AUTHKEY; leave TS_HOSTNAME/TS_EXTRA_ARGS as-is
 docker compose --profile tailscale up -d tailscale
 ```
 
@@ -257,27 +258,39 @@ private WireGuard network only, serves PiTune's existing frontend at
 on the LAN exactly as before; this is an additional way in, not a
 replacement.
 
-**Before you enable this, two things have to happen on Tailscale's side
-first, not just in this repo:**
+**If `DOWNLOAD_ENABLED=true`, `API_TOKEN` is a hard prerequisite for this
+profile, not just a recommendation.** A `tailscale-preflight` container
+runs before `tailscale` starts and refuses to let it come up if
+`DOWNLOAD_ENABLED=true` but `API_TOKEN` is unset — because once `/api/save`
+is reachable from outside the LAN, "no auth configured yet" stops being a
+quick-local-test convenience. `docker compose --profile tailscale up -d`
+fails loudly with an explanation in that case instead of starting anyway.
+(If `DOWNLOAD_ENABLED=false`, the default, this check is a no-op.)
+
+**Before you enable this, more has to happen on Tailscale's side first, not
+just in this repo:**
 
 1. Apply [`../tailscale/acl-policy.hujson`](../tailscale/acl-policy.hujson)
    to your tailnet's ACL (Tailscale admin console → Access Controls). Skip
    this and joining the tailnet exposes *every* open port on the Pi —
    `NAVIDROME_PORT` included — to any device on your tailnet, not just the
    one path above.
-2. Get a `TS_AUTHKEY` and, ideally, turn on device approval so a new device
-   can't reach anything until you've approved it. The full reasoning for why
-   "must be set up on the LAN first" isn't something Tailscale checks
-   literally, and what actually delivers that property instead, is written
-   up in [`../tailscale/docs/DEVICE-ONBOARDING.md`](../tailscale/docs/DEVICE-ONBOARDING.md).
+2. Get a `TS_AUTHKEY` (prefer non-reusable, short expiry — see the comment
+   in `.env.example` for why that's enough) and, ideally, turn on device
+   approval so a new device can't reach anything until you've approved it.
+   The full reasoning for why "must be set up on the LAN first" isn't
+   something Tailscale checks literally, and what actually delivers that
+   property instead, is written up in
+   [`../tailscale/docs/DEVICE-ONBOARDING.md`](../tailscale/docs/DEVICE-ONBOARDING.md).
 
 See [`../tailscale/README.md`](../tailscale/README.md) for the full
-picture, including why the ACL grants exactly one port (443) rather than
-opening the whole node, and why a static device allow-list — not a live
-concurrent-connection counter — is the actual "only these devices, only
-this many" control here. `frontend/nginx.conf`'s `limit_conn` (20 per
-source IP) is a narrower, complementary safety net on top of that, not a
-substitute for it.
+picture, including why the ACL grants only `tag:pitune-server:443` (a
+separate tag per stack, not one shared tag for everything, so a device can
+be scoped to just this stack if you want) rather than opening the whole
+node, and why a static device allow-list — not a live concurrent-connection
+counter — is the actual "only these devices, only this many" control here.
+`frontend/nginx.conf`'s `limit_conn` (20 per source IP) is a narrower,
+complementary safety net on top of that, not a substitute for it.
 
 ## Troubleshooting
 

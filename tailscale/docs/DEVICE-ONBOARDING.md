@@ -21,7 +21,10 @@ What *does* exist, and what this stack actually relies on:
    login can apply `tag:approved-device` to a machine. A device cannot
    grant itself access; only you can.
 3. **The ACL policy itself** — even an approved, tagged device can only
-   reach `tag:home-server` on port 443, nothing else.
+   reach the specific server tag(s) it's granted, on the specific port(s)
+   each stack's own `tailscale serve` answers on — see
+   `../acl-policy.hujson`'s per-service rules. Nothing else, including
+   every other port a service happens to have open on the LAN.
 
 Combining these three gives you the practical property you're actually
 after — "only devices I've personally signed off on can reach my stuff,
@@ -44,12 +47,21 @@ catch and reject instead.
 
 1. **Settings → Device management → "Require approval for new devices"** —
    turn this on. (https://login.tailscale.com/admin/settings/device-management)
+   **Verify it actually saved**: the toggle should show enabled/blue on a
+   page reload, not just right after you clicked it. The real proof comes
+   in step 2 of "Adding a new personal device" below — a freshly-added
+   device should show up in the Machines list as **waiting for approval**,
+   not already connected. If a new device is immediately usable instead,
+   the setting didn't take — go back and re-check it before relying on it.
 2. **Access controls** — paste in `../acl-policy.hujson`, with your own
    login substituted for every `REPLACE-ME-your-login@example.com`. Save.
-3. **Each Pi** running one of these stacks needs `tag:home-server`. Set it
-   via that Pi's own `.env` (`TS_EXTRA_ARGS=--advertise-tags=tag:home-server`)
+3. **Each Pi** running one of these stacks needs its own server tag —
+   `tag:home-drive-server`, `tag:pitune-server`, or `tag:pihub-server`
+   respectively (never the same tag for two different Pis). Set it via
+   that Pi's own `.env` (e.g. `TS_EXTRA_ARGS=--advertise-tags=tag:pitune-server`)
    before its first `tailscale up`, or apply it afterwards from the admin
-   console's device list.
+   console's device list. A Pi with no tag matches none of the ACL's rules
+   and is unreachable, same as an untagged client device.
 
 ### 2. Adding a new personal device
 
@@ -63,8 +75,14 @@ catch and reject instead.
    run `tailscale up --advertise-tags=tag:approved-device` from the device
    itself, if your `tagOwners` setup allows self-tagging — the template
    policy only lists your own login, so from the console is simpler).
+   `tag:approved-device` grants all three services at once (see
+   `../acl-policy.hujson`) — for a device that should only ever reach one
+   of them (a guest you're handing PiTune to, say, not your personal
+   Nextcloud), don't use this tag. Instead add a narrower one to
+   `tagOwners` (e.g. `tag:approved-device-pitune`) with its own single ACL
+   rule against just `tag:pitune-server`, and tag their device with that.
 5. It can now reach `https://<pi-hostname>.<tailnet>.ts.net/` for every Pi
-   tagged `tag:home-server` — from your home network or anywhere else.
+   whose server tag that device's tag is granted against.
 
 ### Revoking a device
 

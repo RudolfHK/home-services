@@ -45,11 +45,48 @@ to 100 devices, which is more than enough for a home setup.
 2. Click **Generate auth key**
 3. Settings:
    - **Description:** homepi-docker
-   - **Reusable:** ✅ (so the container can re-auth after a restart)
-   - **Expiry:** 90 days or longer
-   - **Tags:** optionally add `tag:server` if you use ACL tags
+   - **Reusable:** ❌ — leave unticked. `TS_STATE_DIR` (see
+     `docker-compose.yml`) persists this container's identity in a named
+     volume, so the key is only ever needed for the very first
+     `tailscale up`; every restart after that re-authenticates from that
+     cached state, not the key. A reusable key is a standing credential
+     that, if it ever leaks (a stray backup, a compromised workstation
+     it was pasted on), lets anyone enroll an arbitrary device into your
+     tailnet — a non-reusable one is worthless after this one use.
+   - **Expiry:** as short as the console allows (an hour is plenty — you're
+     about to use it immediately).
+   - **Tags:** the key-generation form has its own `Tags` field — you can
+     set `tag:home-drive-server` there, or leave it and set it via
+     `TS_EXTRA_ARGS` instead (see below). Either way, `tag:home-drive-server`
+     is what makes step 2b ("Apply the shared ACL") grant this node
+     anything at all.
 4. Copy the key — it looks like `tskey-auth-XXXX…`
-5. Paste it into `.env` as `TS_AUTHKEY=tskey-auth-...`
+5. Paste it into `.env` as `TS_AUTHKEY=tskey-auth-...`. If the key expires
+   before you run `docker compose up`, just generate a fresh one — nothing
+   about a short-lived key changes any other step here.
+
+### 2b. Apply the shared ACL and advertise this node's tag
+
+This step exists because of a real trap: without it, once this Pi joins
+your tailnet, **every** tailnet member can reach **every** port here —
+FileBrowser, CouchDB, and Nextcloud's PHP-FPM `9000` and nginx `8081` (both
+already loopback-bound specifically to survive this scenario, but still
+better closed off at the network layer too), not just the intended `443`/
+`8443`/`9443`. Fix that before going further:
+
+1. Paste [`../../tailscale/acl-policy.hujson`](../../tailscale/acl-policy.hujson)
+   into **Access controls** in the admin console (with your own login in
+   place of every `REPLACE-ME-your-login@example.com`) — it grants
+   `tag:approved-device` access to `tag:home-drive-server` on exactly
+   `443`, `8443`, and `9443`, nothing else.
+2. Make sure `TS_EXTRA_ARGS=--advertise-tags=tag:home-drive-server` is set
+   in `.env` (see `.env.example`) *before* the first `tailscale up` — a
+   node with no tag doesn't match that ACL rule at all and is denied by
+   default, same as a device with no `tag:approved-device`.
+3. See [`../../tailscale/docs/DEVICE-ONBOARDING.md`](../../tailscale/docs/DEVICE-ONBOARDING.md)
+   for approving and tagging the *devices* (phones, laptops) that should
+   be allowed to reach this node — a separate step from tagging the node
+   itself.
 
 ### 3. Enable MagicDNS and HTTPS
 

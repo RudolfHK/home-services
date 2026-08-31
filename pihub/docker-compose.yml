@@ -429,6 +429,39 @@ services:
   # port it has open — including NAVIDROME_PORT, JELLYFIN_PORT and even
   # PIHUB_PORT itself — becomes reachable by any tailnet member, not just
   # the :443 endpoint below. See ../tailscale/README.md.
+
+  # Hard gate, not just a doc warning: refuses to let `tailscale` (below)
+  # start at all if API_TOKEN is unset. Without this, enabling remote
+  # access on a box that never needed a token for pure-LAN use silently
+  # hands every approved tailnet device unauthenticated start/stop/
+  # restart/logs control over every container via homepage. This container
+  # exits 1 with an explicit error instead, and Compose refuses to start
+  # `tailscale` when it does (see that service's `depends_on: condition:
+  # service_completed_successfully`). A one-shot check like this can't live
+  # inside the `tailscale/tailscale` image itself, hence the separate tiny
+  # container.
+  tailscale-preflight:
+    profiles: ["tailscale"]
+    image: alpine:3.20
+    container_name: pihub-tailscale-preflight
+    restart: "no"
+    logging: *default-logging
+    environment:
+      API_TOKEN: ${API_TOKEN:-}
+    command:
+      - sh
+      - -c
+      - |
+        if [ -z "$$API_TOKEN" ]; then
+          echo "FATAL: API_TOKEN is unset, and the tailscale profile is" >&2
+          echo "starting. Once this node is reachable from outside the LAN," >&2
+          echo "homepage's start/stop/restart/logs endpoints would have NO" >&2
+          echo "auth at all, reachable by every approved tailnet device." >&2
+          echo "Set API_TOKEN in .env (see .env.example) first." >&2
+          exit 1
+        fi
+        echo "tailscale-preflight: OK."
+
   tailscale:
     profiles: ["tailscale"]
     image: tailscale/tailscale:${TAILSCALE_TAG:-latest}
@@ -442,14 +475,20 @@ services:
     # target's profile isn't active alongside the dependent service's (the
     # exact issue docker-proxy's own comment above already documents for
     # homepage). Not health-gated anyway — if nginx isn't up yet, `tailscale
-    # serve` just retries its proxy connection until it is.
+    # serve` just retries its proxy connection until it is. tailscale-preflight
+    # (same "tailscale" profile, no cross-profile issue) IS a hard gate — see
+    # its own comment above.
+    depends_on:
+      tailscale-preflight:
+        condition: service_completed_successfully
+
     environment:
       TS_AUTHKEY: ${TS_AUTHKEY:-}
       TS_HOSTNAME: ${TS_HOSTNAME:-pihub}
       TS_SERVE_CONFIG: /config/tailscale/serve.json
       TS_USERSPACE: "false"
       TS_ACCEPT_DNS: "true"
-      # e.g. --advertise-tags=tag:home-server — see ../tailscale/acl-policy.hujson.
+      # e.g. --advertise-tags=tag:pihub-server — see ../tailscale/acl-policy.hujson.
       TS_EXTRA_ARGS: ${TS_EXTRA_ARGS:-}
       TS_STATE_DIR: /var/lib/tailscale
       TZ: ${TZ}

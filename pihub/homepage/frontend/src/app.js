@@ -3,15 +3,42 @@ import { renderSystemStats, systemAlerts } from "./components/SystemStats.js";
 import { renderAlerts, renderUpdates } from "./components/HealthPanel.js";
 import { openLogViewer } from "./components/LogViewer.js";
 
-// Fetched once at init from /api/auth/token (a same-origin-only read — see
-// that endpoint's own comment in main.py) and attached to every request
-// after. Harmless to send on read-only endpoints that don't check it;
-// required by the backend on every start/stop/restart/logs call.
+// The backend deliberately has no "fetch the current token" endpoint —
+// CORS only stops a cross-origin webpage's JS from reading a response, not
+// a direct non-browser request, so an endpoint that just hands the token
+// back to whoever asks would defeat the whole point of it once this stack
+// is reachable over Tailscale from outside the LAN (see ../../../tailscale/).
+// Instead the token lives only where a human puts it: this browser's own
+// localStorage, entered once via promptForToken() below, the same pattern
+// PiTune's own Library tab uses for Navidrome credentials.
+const TOKEN_KEY = "pihub-homepage.apiToken";
 let apiToken = "";
+try { apiToken = localStorage.getItem(TOKEN_KEY) || ""; } catch { apiToken = ""; }
+
+function promptForToken() {
+  const entered = window.prompt(
+    "PiHub API token required for this action.\n\n" +
+    "Paste the value of API_TOKEN from this Pi's .env file (ask whoever " +
+    "set up this PiHub if you don't have it). Stored only in this browser."
+  );
+  if (entered && entered.trim()) {
+    apiToken = entered.trim();
+    try { localStorage.setItem(TOKEN_KEY, apiToken); } catch { /* private browsing, etc. */ }
+  }
+  return apiToken;
+}
 
 async function fetchJSON(url, opts) {
   const headers = { ...(opts && opts.headers), "X-PiHub-Token": apiToken };
-  const res = await fetch(url, { ...opts, headers });
+  let res = await fetch(url, { ...opts, headers });
+  // A 401 means either no token was ever entered, or a stale/wrong one is
+  // saved (e.g. API_TOKEN was rotated) — either way, ask once and retry
+  // this same request with whatever was entered, rather than failing
+  // silently or looping.
+  if (res.status === 401) {
+    promptForToken();
+    res = await fetch(url, { ...opts, headers: { ...(opts && opts.headers), "X-PiHub-Token": apiToken } });
+  }
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json();
 }
@@ -129,13 +156,6 @@ document.getElementById("check-updates").addEventListener("click", async (e) => 
 
 // ── Init ──────────────────────────────────────────────────────────────
 async function init() {
-  try {
-    const auth = await fetchJSON("/api/auth/token");
-    apiToken = auth.token || "";
-  } catch (err) {
-    console.warn("could not fetch API token — mutating actions will fail:", err);
-  }
-
   try {
     settings = await fetchJSON("/api/config/settings");
   } catch {

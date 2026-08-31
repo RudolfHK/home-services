@@ -55,9 +55,17 @@ FRONTEND_DIR = Path(os.environ.get("FRONTEND_DIR", "/app/frontend"))
 
 # If unset, every mutating endpoint below runs with no auth at all — fine
 # for a quick local test, not for anything reachable by other devices. Set
-# API_TOKEN in .env (scripts/setup.sh generates one); the frontend fetches
-# it once from /api/auth/token (a same-origin-only read, see CORS_ORIGINS
-# above) and attaches it as X-PiHub-Token on every mutating request after.
+# API_TOKEN in .env (scripts/setup.sh generates one); the browser never
+# learns it from this server — there is deliberately no "fetch the current
+# token" endpoint. CORS_ORIGINS only stops a cross-origin *webpage's JS*
+# from reading a response; it does nothing to stop a direct, non-browser
+# request (curl, a script) to an endpoint that just hands the token back to
+# whoever asks, which is exactly what such an endpoint would be. Once
+# Tailscale (see ../../tailscale/) makes "whoever can reach this port"
+# include devices outside your house, that gap stops being theoretical.
+# Instead the frontend asks the person using it to paste the token once
+# (the same value you put in .env) and keeps it in that browser's own
+# localStorage from then on — see frontend/src/app.js's promptForToken().
 API_TOKEN = os.environ.get("API_TOKEN", "").strip()
 if not API_TOKEN:
     logger.warning(
@@ -204,17 +212,6 @@ async def health():
 async def get_settings():
     return load_settings()
 
-
-@app.get("/api/auth/token")
-async def get_auth_token():
-    # Freely readable by anything that can reach this endpoint — same-
-    # origin JS gets it via this call; a non-browser client on the LAN
-    # could read it too, same as it could just view-source the page. Its
-    # actual job is narrower: stop a CROSS-ORIGIN webpage's JS from ever
-    # learning it, which CORS_ORIGINS (not "*") does enforce. See the
-    # CORS_ORIGINS comment above for what this does and doesn't protect
-    # against.
-    return {"token": API_TOKEN, "enabled": bool(API_TOKEN)}
 
 
 @app.get("/api/services")
