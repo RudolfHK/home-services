@@ -1,11 +1,11 @@
-# The Drive — Nextcloud on the Pi
+# The Drive: Nextcloud on the Pi
 
 Google-Drive-style storage on your own hardware: browse and edit in a browser, sync clients
-on desktop and mobile, users and sharing — and file locking, so two people cannot write the
+on desktop and mobile, users and sharing, and file locking, so two people can't write the
 same file at the same time.
 
-It is an **optional add-on**. The core stack (FileBrowser + CouchDB + Tailscale) runs
-without it, and a plain `docker compose up -d` does not start it.
+It's an **optional add-on**. The core stack (FileBrowser + CouchDB + Tailscale) runs
+without it, and a plain `docker compose up -d` doesn't start it.
 
 ---
 
@@ -18,12 +18,13 @@ without it, and a plain `docker compose up -d` does not start it.
 | Syncthing | ✅ peer-to-peer | ❌ no central UI | ❌ creates conflict copies | ✅ |
 | Plain WebDAV | ❌ mount only | limited | ✅ LOCK only | ✅ |
 
-Syncthing is the interesting near-miss: it syncs beautifully, but when two devices change
-one file it keeps both and names one `file.sync-conflict-2026….md`. That is the exact
+Syncthing is the interesting near-miss. It syncs beautifully, but when two devices change
+one file it keeps both and names one `file.sync-conflict-2026….md`. That's the exact
 failure this deployment is meant to prevent, so it was ruled out.
 
 Deliberately **not** installed: Collabora / OnlyOffice. Simultaneous collaborative editing
-is the opposite answer to the same question — and neither runs comfortably on a Pi.
+answers a different question than the one this stack is solving, and neither runs
+comfortably on a Pi anyway.
 
 ---
 
@@ -43,7 +44,7 @@ openssl rand -base64 32     # NEXTCLOUD_REDIS_PASSWORD
 bash scripts/install-drive.sh
 ```
 
-First run downloads roughly 500 MB and then unpacks Nextcloud into a fresh volume; on a Pi
+First run downloads roughly 500 MB and then unpacks Nextcloud into a fresh volume. On a Pi
 this takes several minutes, and the installer waits for it rather than failing.
 
 Then open **`https://<TS_HOSTNAME>.<tailnet>.ts.net:9443/`** and sign in as
@@ -51,15 +52,14 @@ Then open **`https://<TS_HOSTNAME>.<tailnet>.ts.net:9443/`** and sign in as
 
 ### Why a separate port
 
-FileBrowser keeps `/` on 443, and the drive gets its own port. Running Nextcloud in a
+FileBrowser keeps `/` on 443, so the drive gets its own port. Running Nextcloud in a
 subdirectory requires webroot rewriting plus special handling for `/.well-known`, and breaks
 CalDAV/CardDAV discovery in ways that are tedious to debug. A port is one line in
-`serve.json` and everything works normally.
+`serve.json`, and everything works normally.
 
-Change it by editing `NEXTCLOUD_PORT` in `.env` **and** `config/tailscale/serve.json` —
-that file is static JSON and cannot read `.env`. The installer refuses to run if the two
-disagree, because the symptom otherwise is a drive that is up but unreachable with no error
-anywhere.
+Change it by editing `NEXTCLOUD_PORT` in `.env` **and** `config/tailscale/serve.json`; that
+file is static JSON and can't read `.env`. The installer refuses to run if the two disagree,
+because otherwise the symptom is a drive that's up but unreachable, with no error anywhere.
 
 ---
 
@@ -67,42 +67,42 @@ anywhere.
 
 Install the official clients and point them at `https://<host>.<tailnet>.ts.net:9443`:
 
-- **Desktop** (Windows/macOS/Linux) — full two-way sync of selected folders, or Virtual
+- **Desktop** (Windows/macOS/Linux): full two-way sync of selected folders, or Virtual
   Files mode where nothing is downloaded until opened.
-- **Android / iOS** — browse, auto-upload photos, make files available offline.
-- **Anything WebDAV** — `https://<host>.<tailnet>.ts.net:9443/remote.php/dav/files/<user>/`
+- **Android / iOS**: browse, auto-upload photos, make files available offline.
+- **Anything WebDAV**: `https://<host>.<tailnet>.ts.net:9443/remote.php/dav/files/<user>/`
   works in Windows Explorer, macOS Finder, Nautilus, and rclone.
 
-The device must be on your tailnet. That is the whole security boundary — there is no
-public endpoint to attack.
+The device must be on your tailnet. That's the whole security boundary; there's no public
+endpoint to attack.
 
 **Use an app password per device**, not your login: Personal settings → Security → Devices &
-sessions → Create new app password. A lost phone is then revoked with one click and cannot
-be used to change your password or read your sessions.
+sessions → Create new app password. A lost phone is then revoked with one click and can't be
+used to change your password or read your sessions.
 
 ---
 
 ## How the corruption protection actually works
 
-Three separate mechanisms, and it is worth knowing which one does what — they fail
-differently.
+Three separate mechanisms handle this, and it's worth knowing which one does what, since
+they fail differently.
 
-### 1. Transactional file locking — automatic
+### 1. Transactional file locking, automatic
 
 Every write takes a short-lived lock in Redis first. A second client trying to write the
 same file gets `423 Locked` and retries, instead of interleaving its bytes with the first
-writer's. **This is the thing that prevents corruption**, it is always on, and you never see
+writer's. **This is the thing that prevents corruption.** It's always on, and you never see
 it unless two clients genuinely collide.
 
-It needs shared, fast, atomic storage, which is why there is a Redis container:
+It needs shared, fast, atomic storage, which is why there's a Redis container:
 `'filelocking.enabled' => true` with `memcache.locking` pointed at Redis in
 [zz-homedrive.config.php](../config/nextcloud/zz-homedrive.config.php).
 
-Locks expire after 15 minutes (`filelocking.ttl`) so a client that dies mid-write cannot
-block a file forever. The `nextcloud-cron` container is what actually clears them — which is
-why that container is not optional either.
+Locks expire after 15 minutes (`filelocking.ttl`) so a client that dies mid-write can't block
+a file forever. The `nextcloud-cron` container is what actually clears them, which is why
+that container isn't optional either.
 
-### 2. Exclusive locks — deliberate, user-visible
+### 2. Exclusive locks, deliberate and user-visible
 
 The `files_lock` app, installed by `install-drive.sh`. Right-click a file → **Lock file**.
 While locked:
@@ -113,10 +113,10 @@ While locked:
   locks *automatically* when they open and close a document.
 
 This is the answer to "two people must not edit the same file at once" in the workflow
-sense. Unlock manually, or let it expire — a lock a user forgot about does not become
+sense. Unlock manually, or let it expire; a lock a user forgot about doesn't become
 permanent.
 
-### 3. Versions and trash — the recovery net
+### 3. Versions and trash: the recovery net
 
 Locking prevents the collision; versions save you when something goes wrong anyway.
 Every change keeps a version (90 days) and deleted files sit in the trash (30 days), both
@@ -130,16 +130,16 @@ Right-click → Versions → Restore.
   wins, and the first version is in the version history. Locking is advisory in the sense
   that a user can always unlock.
 - **A file edited outside Nextcloud.** See the next section.
-- **Bit rot on the drive itself.** That is what SMART monitoring and backups are for.
+- **Bit rot on the drive itself.** That's what SMART monitoring and backups are for.
 
 ---
 
 ## The one rule: nothing else writes into the drive
 
 Nextcloud keeps an index of every file in its database. Write into
-`${DATA_PATH}/nextcloud/data/` from outside — a shell, rsync, FileBrowser — and Nextcloud
-does not know the file exists. Worse, it may overwrite it, because as far as it is
-concerned that name is free.
+`${DATA_PATH}/nextcloud/data/` from outside (a shell, rsync, FileBrowser) and Nextcloud has
+no idea the file exists. Worse, it may overwrite it, because as far as it's concerned that
+name is free.
 
 So: **FileBrowser owns `${DATA_PATH}/files/`, the drive owns `${DATA_PATH}/nextcloud/data/`,
 and they never share a directory.**
@@ -152,8 +152,8 @@ docker exec -u www-data homedrive-nextcloud-app php occ files:scan --all
 
 Want the FileBrowser tree visible inside the drive as well? Do it properly, through
 **Settings → Administration → External storage** as a *Local* mount. Nextcloud then knows
-it is external and rescans it — but locking and versioning do **not** apply there, so it is
-a viewing convenience, not a place to collaborate.
+it's external and rescans it, but locking and versioning do **not** apply there, so treat it
+as a viewing convenience, not a place to collaborate.
 
 ---
 
@@ -172,7 +172,7 @@ docker compose down            # stop and remove
 docker compose up -d           # bring the whole stack back
 ```
 
-Without that line in `.env`, compose **silently ignores** the five drive containers —
+Without that line in `.env`, compose **silently ignores** the five drive containers.
 `down` removes only the core stack and reports success, which looks exactly like the drive
 having disappeared. If you hit that, either add the line or pass the profile explicitly:
 
@@ -198,7 +198,7 @@ bash scripts/drive-autostart.sh off
 ```
 
 (`systemctl enable/disable homedrive-drive` does the same thing; the script exists so that
-`off` also stops the containers — see below for why that matters.)
+`off` also stops the containers, which matters for the reason explained below.)
 
 **Why a systemd unit when every container already has `restart: unless-stopped`?**
 Because that policy covers less than it appears to:
@@ -213,8 +213,8 @@ Because that policy covers less than it appears to:
 That last row is the one that actually bites on a Pi. Every drive container binds a path
 under `${DATA_PATH}` with `create_host_path: false`, so if Docker wins the race against the
 external drive they all fail to start and simply stay dead. A restart policy has no way to
-express "wait for that filesystem"; the unit declares `RequiresMountsFor=${DATA_PATH}` and
-additionally waits (up to `DRIVE_MOUNT_WAIT`, default 180 s) for the four bind-mount
+express "wait for that filesystem," so the unit declares `RequiresMountsFor=${DATA_PATH}`
+and additionally waits (up to `DRIVE_MOUNT_WAIT`, default 180 s) for the four bind-mount
 directories to appear before calling `docker compose up -d`.
 
 So the two mechanisms split the job: **systemd owns starting the drive at boot, Docker's
@@ -226,7 +226,7 @@ would therefore still bring it back at the next boot, and the switch would look 
 `drive-autostart.sh off` (and `systemctl disable --now`) stops them, which is what makes the
 setting stick.
 
-A deliberately stopped drive is **not** reported as a failure: the health check treats all
+A deliberately stopped drive is **not** reported as a failure. The health check treats all
 five containers being down together as intentional and says `drive  stopped` rather than
 raising five critical alerts every fifteen minutes. Some-but-not-all down is still a real
 failure and still alerts.
@@ -245,7 +245,7 @@ occ app:list                     # is files_lock enabled?
 occ config:list system           # effective configuration
 ```
 
-Health monitoring already covers the drive — [health-monitor.sh](../scripts/health-monitor.sh)
+Health monitoring already covers the drive: [health-monitor.sh](../scripts/health-monitor.sh)
 picks up the five containers automatically when they exist, and
 `bash scripts/health-dashboard.sh` shows a `drive` line with the version, plus the
 Nextcloud share of the disk usage breakdown. For what actually moved on the drive:
@@ -255,10 +255,10 @@ homedrive-status --drive        # files added / changed / deleted, and the backu
 homedrive-status --drive --scan # force a fresh walk instead of the cached one
 ```
 
-That walks `data/<user>/files` from inside the container — the host cannot read it — and
-skips versions and the trash, which would otherwise double-count every edit. It alerts on three states a *running* container
-will not tell you about: install unfinished, stuck in maintenance mode, and a pending
-database upgrade after an image pull.
+That walks `data/<user>/files` from inside the container, since the host can't read it, and
+skips versions and the trash, which would otherwise double-count every edit. It alerts on
+three states a *running* container won't tell you about: install unfinished, stuck in
+maintenance mode, and a pending database upgrade after an image pull.
 
 ### Upgrades
 
@@ -268,23 +268,23 @@ docker compose --profile drive up -d
 docker exec -u www-data homedrive-nextcloud-app php occ upgrade   # if asked to
 ```
 
-Never skip a major version — Nextcloud only supports one-major-at-a-time upgrades. Pin
+Never skip a major version. Nextcloud only supports one-major-at-a-time upgrades. Pin
 `NEXTCLOUD_TAG` in `.env` once the stack works, and step it deliberately.
 
 ### Backups
 
-`scripts/backup.sh` handles the drive automatically when it is running:
+`scripts/backup.sh` handles the drive automatically when it's running:
 
 - puts Nextcloud in maintenance mode so the dump is coherent,
-- `pg_dump`s the database and validates that the dump is not truncated,
+- `pg_dump`s the database and validates that the dump isn't truncated,
 - archives `config/` (which holds `config.php`, and therefore the instance id and the
-  secret — a restore without it is not a restore),
+  secret, without which a restore isn't really a restore),
 - takes Nextcloud back out of maintenance mode, including on failure or Ctrl-C.
 
 User files are **excluded by default**, exactly like the FileBrowser tree, because a
-multi-terabyte tar every night is not a backup strategy. Set
-`BACKUP_INCLUDE_NEXTCLOUD_DATA=true` to include them — the drive then stays offline for the
-whole run — or mirror `${DATA_PATH}/nextcloud/data/` with rclone/rsync separately, which is
+multi-terabyte tar every night isn't a backup strategy. Set
+`BACKUP_INCLUDE_NEXTCLOUD_DATA=true` to include them (the drive then stays offline for the
+whole run), or mirror `${DATA_PATH}/nextcloud/data/` with rclone/rsync separately, which is
 the better answer.
 
 To restore: recreate the stack, `psql` the dump back in, unpack `config.tar`, restore the
@@ -295,10 +295,10 @@ data directory, then `occ maintenance:repair` and `occ files:scan --all`.
 ## Security notes specific to this setup
 
 **Everything is bound to loopback inside the Tailscale namespace.** This deserves emphasis
-because it is the one place this compose file differs from every Nextcloud example online.
+because it's the one place this compose file differs from every Nextcloud example online.
 All the containers run with `network_mode: service:tailscale`, so they share a network stack
-that owns a tailnet IP. A service left on its default `0.0.0.0` here is not "internal" — it
-is published to every device on your tailnet. Hence:
+that owns a tailnet IP. A service left on its default `0.0.0.0` here isn't "internal," it's
+published to every device on your tailnet. Hence:
 
 | Service | Bound to | Set in |
 |---|---|---|
@@ -311,15 +311,15 @@ php-fpm is the one that really matters: FastCGI has no authentication whatsoever
 exposed port 9000 is remote code execution for anyone on the tailnet.
 
 **Real client IPs.** `tailscale serve` terminates TLS and proxies from 127.0.0.1, so without
-`trusted_proxies` every request would appear to come from localhost — and Nextcloud's
+`trusted_proxies` every request would appear to come from localhost, and Nextcloud's
 brute-force protection would rate-limit all users together after any one of them fumbled a
-password. It is set, along with `OVERWRITEPROTOCOL=https`, without which Nextcloud emits
+password. It's set, along with `OVERWRITEPROTOCOL=https`, without which Nextcloud emits
 `http://` URLs and the desktop client fails with a redirect loop that looks like a login bug.
 
 **Server-side encryption is deliberately off.** It stops deduplication working, makes
 recovery from a damaged database considerably harder, and protects against a threat model
-(untrusted storage backend) that does not apply to a disk in your house. Encrypt the drive
-itself with LUKS if that is the concern.
+(untrusted storage backend) that doesn't apply to a disk in your house. Encrypt the drive
+itself with LUKS if that's the concern.
 
 **Turn on two-factor authentication** for the admin account: Apps → search "Two-Factor TOTP"
 → enable, then Personal settings → Security.
@@ -338,4 +338,4 @@ Roughly 900 MB of RAM for the five containers at idle, and the drive is comforta
   OS is on microSD, this is the argument for the NVMe HAT in [HARDWARE.md](HARDWARE.md).
 
 If the box feels slow, look at `bash scripts/health-dashboard.sh --watch` while using the
-drive — CPU, disk throughput and per-container memory are all on one screen.
+drive: CPU, disk throughput and per-container memory are all on one screen.

@@ -1,7 +1,7 @@
 # Tailscale Integration Guide
 
 This stack uses Tailscale to provide **private, encrypted access** to FileBrowser and
-CouchDB from any device — phone, laptop, or tablet — without opening any ports on your
+CouchDB from any device (phone, laptop, or tablet) without opening any ports on your
 router or exposing anything to the public internet.
 
 ---
@@ -24,7 +24,7 @@ The **tailscale container** runs in the same Docker network namespace as the fil
 and couchdb containers.  The `tailscale serve` command inside that container creates an
 HTTPS reverse proxy that routes incoming tailnet connections to the correct service.
 
-No Docker ports are published to the host — the only way in is through the tailnet.
+No Docker ports are published to the host. The only way in is through the tailnet.
 
 ---
 
@@ -48,7 +48,7 @@ to 100 devices, which is more than enough for a home setup.
    - **Reusable:** ✅ (so the container can re-auth after a restart)
    - **Expiry:** 90 days or longer
    - **Tags:** optionally add `tag:server` if you use ACL tags
-4. Copy the key — it looks like `tskey-auth-XXXX…`
+4. Copy the key. It looks like `tskey-auth-XXXX…`
 5. Paste it into `.env` as `TS_AUTHKEY=tskey-auth-...`
 
 ### 3. Enable MagicDNS and HTTPS
@@ -85,11 +85,10 @@ The current configuration maps:
 `containerboot` (the tailscale image's entrypoint) substitutes exactly one placeholder in
 this file: `${TS_CERT_DOMAIN}`, which it replaces with the node's MagicDNS name.
 
-Anything else — `${TS_HOSTNAME}`, `${TS_TAILNET}`, any other environment variable — is
-**not** expanded. It reaches `tailscaled` verbatim, producing a serve config keyed on a
-hostname that does not exist. The symptom is nasty: every container reports healthy, the
-node shows up in the admin console, and nothing answers on port 443. Always use
-`${TS_CERT_DOMAIN}`.
+Anything else, like `${TS_HOSTNAME}` or `${TS_TAILNET}`, is **not** expanded. It reaches
+`tailscaled` verbatim, producing a serve config keyed on a hostname that doesn't exist. The
+symptom is nasty: every container reports healthy, the node shows up in the admin console,
+and nothing answers on port 443. Always use `${TS_CERT_DOMAIN}`.
 
 JSON has no comment syntax and `tailscaled` validates the file, so keep notes in
 `config/tailscale/README.md` rather than adding keys to `serve.json`.
@@ -97,7 +96,7 @@ JSON has no comment syntax and `tailscaled` validates the file, so keep notes in
 #### Why CouchDB is also served on 8443
 
 Tailscale strips the mount-point prefix before proxying, so CouchDB's REST API works fine
-under `/couchdb/` — that is the URI to give Obsidian LiveSync.
+under `/couchdb/`. That's the URI to give Obsidian LiveSync.
 
 Fauxton (CouchDB's admin UI) does **not** work under a prefix: its bundle requests absolute
 paths such as `/_all_dbs`, which on port 443 resolve to `/` and are routed to FileBrowser
@@ -109,7 +108,7 @@ To verify the serve config is active:
 docker exec homedrive-tailscale tailscale serve status
 ```
 
-Both ports use `serve`, not `funnel` — they are reachable from your tailnet only, never
+Both ports use `serve`, not `funnel`, so they're reachable from your tailnet only, never
 from the public internet.
 
 ---
@@ -163,7 +162,7 @@ services are reachable from the Pi's LAN interface too, not just the tailnet.
 
 1. Install **Tailscale** on your phone (iOS App Store / Google Play).
 2. Sign in with the same Tailscale account.
-3. Open `https://homepi.<tailnet>.ts.net/` in your mobile browser — FileBrowser loads.
+3. Open `https://homepi.<tailnet>.ts.net/` in your mobile browser. FileBrowser loads.
 4. For Obsidian LiveSync, the CouchDB URL is:
    `https://homepi.<tailnet>.ts.net/couchdb/`
 5. For the CouchDB admin UI, use `https://homepi.<tailnet>.ts.net:8443/_utils/`
@@ -178,7 +177,7 @@ services are reachable from the Pi's LAN interface too, not just the tailnet.
 | CouchDB API      | `https://<hostname>.<tailnet>.ts.net/couchdb/`            | 5984          |
 | CouchDB Fauxton  | `https://<hostname>.<tailnet>.ts.net:8443/_utils/`        | 5984          |
 
-Fauxton is on **8443**, not under `/couchdb/` — see the `serve.json` section above.
+Fauxton is on **8443**, not under `/couchdb/`. See the `serve.json` section above.
 
 ---
 

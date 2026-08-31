@@ -11,13 +11,13 @@ Docker stack. Follow these in order.
 2. Insert the microSD card (or connect the NVMe drive via USB adapter).
 3. In Imager:
    - **Device:** Raspberry Pi 5
-   - **OS:** Raspberry Pi OS Lite (64-bit) — no desktop needed.
+   - **OS:** Raspberry Pi OS Lite (64-bit); no desktop needed.
    - **Storage:** Your SD card / NVMe drive.
 4. Click the **gear icon** (or press Ctrl+Shift+X) to open OS Customisation:
    - ✅ Set hostname: `homepi` (or whatever you set as `TS_HOSTNAME`)
    - ✅ Enable SSH → use password authentication (you can add a key later)
    - ✅ Set username + password
-   - ✅ Configure Wi-Fi (SSID + password, country code) — optional if using Ethernet
+   - ✅ Configure Wi-Fi (SSID + password, country code); optional if using Ethernet
    - ✅ Set locale / timezone
 5. Write the image.
 

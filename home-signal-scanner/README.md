@@ -1,9 +1,9 @@
-# RF Monitor & Emitter — Raspberry Pi 5
+# RF Monitor & Emitter: Raspberry Pi 5
 
 **⚠️ LEGAL NOTICE (Germany / EU):** All transmission code enforces ETSI EN 300 328 limits
 (max 20 dBm EIRP, 10% duty cycle). HackRF TX is only for **controlled bench testing**
 with a **50 Ω dummy load** or inside a **shielded Faraday enclosure**. Intentional radio
-interference is a criminal offence (TKG §149(1) no.10 — fine up to €500,000).
+interference is a criminal offence (TKG §149(1) no.10, fine up to €500,000).
 
 ---
 
@@ -18,8 +18,8 @@ A Bluetooth and Wi-Fi RF monitoring, testing, and bench-level signal emitting sy
 | BT Classic + BLE device scanning | `monitor/bt_scanner.py` (hcitool) |
 | Wi-Fi channel congestion map | `monitor/wifi_channel_map.py` (iwlist) |
 | BT hop pattern capture | `monitor/ubertooth_listener.py` (Ubertooth One) |
-| Bench TX — single carrier | `emitter/emit_single_channel.py` (HackRF) |
-| Bench TX — multi-channel sweep | `emitter/emit_sweep.py` (HackRF) |
+| Bench TX, single carrier | `emitter/emit_single_channel.py` (HackRF) |
+| Bench TX, multi-channel sweep | `emitter/emit_sweep.py` (HackRF) |
 | Pot-controlled live TX | `emitter/emit_with_pot.py` (HackRF + MCP3008) |
 | Legal guard (enforced everywhere) | `emitter/legal_guard.py` |
 | Software-only testing | `mock/` modules + `--mock` flag |
@@ -35,7 +35,7 @@ A Bluetooth and Wi-Fi RF monitoring, testing, and bench-level signal emitting sy
 | Raspberry Pi 5 (8 GB) | Main compute unit |
 | RTL-SDR Blog V4 dongle | Passive RX, 500 kHz–1.75 GHz |
 | Ubertooth One | BT 2.4 GHz sniffer |
-| HackRF One | Bench TX/RX 1 MHz–6 GHz — **dummy load only** |
+| HackRF One | Bench TX/RX 1 MHz–6 GHz, **dummy load only** |
 | MCP3008 ADC + 3× potentiometers | Physical dials for gain/channel |
 | 50 Ω SMA dummy load | **Required** for all HackRF TX tests |
 
@@ -113,7 +113,7 @@ rf-monitor/
 │   ├── wifi_channel_map.py
 │   └── ubertooth_listener.py
 │
-├── emitter/                  ← TX — all call legal_guard first
+├── emitter/                  ← TX, all call legal_guard first
 │   ├── legal_guard.py        ← HARD legal ceiling enforcement
 │   ├── emit_single_channel.py
 │   ├── emit_sweep.py
@@ -140,7 +140,7 @@ rf-monitor/
 |---|---|---|
 | Max TX power | 20 dBm EIRP | ETSI EN 300 328 V2.2.2 §4.3.2 |
 | Max duty cycle (non-adaptive) | 10% | ETSI EN 300 328 V2.2.2 §4.3.3 |
-| Intentional interference | Forbidden | TKG §149(1) no.10 — fine up to €500,000 |
+| Intentional interference | Forbidden | TKG §149(1) no.10, fine up to €500,000 |
 | Intercepting private comms | Forbidden | TKG §89 |
 | Uncertified TX on live band | Restricted | FuAG / RED 2014/53/EU |
 

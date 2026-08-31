@@ -1,4 +1,4 @@
-# Hardware Guide — Raspberry Pi 5 Home Drive
+# Hardware Guide: Raspberry Pi 5 Home Drive
 
 This page lists every piece of hardware recommended for a reliable, always-on home drive
 running the FileBrowser + CouchDB stack.
@@ -14,7 +14,7 @@ running the FileBrowser + CouchDB stack.
 | 4 GB RAM | Sufficient for this stack (Tailscale ~50 MB, FileBrowser ~30 MB, CouchDB ~200 MB). |
 | 8 GB RAM | Recommended if you plan to add more services later (Home Assistant, Jellyfin, etc.). |
 
-The Pi 5 uses a **PCIe 2.0 x1** lane exposed via the FPC connector on the board — this is
+The Pi 5 uses a **PCIe 2.0 x1** lane exposed via the FPC connector on the board. This is
 what makes NVMe storage practical for the first time on a Pi.
 
 ---
@@ -32,7 +32,7 @@ under-powered supply causes throttling and SD card corruption.
 
 ### Cooling
 
-The Pi 5 runs hot — sustained CPU loads easily hit 80 °C without active cooling, which
+The Pi 5 runs hot. Sustained CPU loads easily hit 80 °C without active cooling, which
 triggers thermal throttling and slows the whole stack.
 
 **Recommended options (pick one):**
@@ -45,7 +45,7 @@ triggers thermal throttling and slows the whole stack.
 
 ---
 
-### Storage — OS Drive
+### Storage: OS Drive
 
 | Option | Notes |
 |--------|-------|
@@ -57,7 +57,7 @@ order in `raspi-config` → Advanced Options → Boot Order → NVMe/USB Boot.
 
 ---
 
-### Storage — Data Drive (external)
+### Storage: Data Drive (external)
 
 All FileBrowser files and CouchDB data live on a **separate** drive from the OS.
 This makes backups, replacements, and re-imaging the OS much easier.
@@ -75,7 +75,7 @@ This makes backups, replacements, and re-imaging the OS much easier.
 
 ### Networking
 
-- **Gigabit Ethernet** — always prefer wired over Wi-Fi for a server. The Pi 5 has a true
+- **Gigabit Ethernet**: always prefer wired over Wi-Fi for a server. The Pi 5 has a true
   Gigabit NIC (not shared with USB like earlier Pis).
 - Wi-Fi is fine for testing but introduces latency and reliability issues for sync workloads.
 
