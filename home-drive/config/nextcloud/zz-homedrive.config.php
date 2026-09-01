@@ -9,7 +9,10 @@
  * to this deployment lives here.
  *
  * install.sh stages a copy into ${DATA_PATH}/nextcloud/config/ owned by the
- * web user. Edit this file, re-run install.sh to apply.
+ * web user, and only AFTER Nextcloud's first-run install has finished: the
+ * image populates that directory from itself only while it is still empty, so
+ * seeding this file early would cost you apps.config.php, redis.config.php and
+ * the rest. Edit this file, re-run install.sh to apply.
  *
  * Anything already provided through environment variables in docker-compose.yml
  * (trusted domains, overwrite host/protocol, database, Redis) is deliberately

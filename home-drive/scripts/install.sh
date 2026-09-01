@@ -194,16 +194,39 @@ sudo chown -R "${REDIS_UID}:${REDIS_UID}" "${DATA_PATH}/nextcloud/redis"
 sudo chmod 750 "${DATA_PATH}/nextcloud/data" "${DATA_PATH}/nextcloud/config"
 sudo chmod 700 "${DATA_PATH}/nextcloud/db" "${DATA_PATH}/nextcloud/redis"
 
-# ── 6. Stage the config overlay ──────────────────────────────────────────────
+# ── 6. The config overlay — staged later, in step 9 ──────────────────────────
 # Copied in already owned by the web user rather than bind-mounted from the
-# repo: Nextcloud writes to its config directory (during upgrades and app
+# repo: Nextcloud writes to its own config directory (during upgrades and app
 # installs), and a read-only mount owned by the wrong user turns those into
 # hard failures.
-info "Staging zz-homedrive.config.php…"
-sudo cp "$PROJECT_DIR/config/nextcloud/zz-homedrive.config.php" \
-        "${DATA_PATH}/nextcloud/config/zz-homedrive.config.php"
-sudo chown "${NC_UID}:${NC_UID}" "${DATA_PATH}/nextcloud/config/zz-homedrive.config.php"
-sudo chmod 640 "${DATA_PATH}/nextcloud/config/zz-homedrive.config.php"
+#
+# Deliberately NOT copied in before the first `up`. The image populates
+# /var/www/html/config from itself only while that directory is still EMPTY:
+#
+#     for dir in config data custom_apps themes; do
+#       if [ ! -d "/var/www/html/$dir" ] || directory_empty "/var/www/html/$dir"; then
+#         rsync ... /usr/src/nextcloud/ /var/www/html/
+#       fi
+#     done                                — the image's docker-entrypoint.sh
+#
+# One pre-staged file is enough to make that test false, and then
+# apps.config.php, redis.config.php, reverse-proxy.config.php and the rest
+# never arrive. Nextcloud boots without them and answers HTTP 500 to every
+# request, including the status.php that both the healthcheck and step 8 poll.
+# Stage it once the installer has finished instead.
+stage_overlay() {
+  local src="$PROJECT_DIR/config/nextcloud/zz-homedrive.config.php"
+  local dst="${DATA_PATH}/nextcloud/config/zz-homedrive.config.php"
+  if sudo cmp -s "$src" "$dst"; then
+    info "zz-homedrive.config.php is already up to date."
+    return 1
+  fi
+  info "Staging zz-homedrive.config.php…"
+  sudo cp "$src" "$dst"
+  sudo chown "${NC_UID}:${NC_UID}" "$dst"
+  sudo chmod 640 "$dst"
+  return 0
+}
 
 # ── 7. Validate and start ────────────────────────────────────────────────────
 info "Validating docker-compose.yml…"
@@ -216,7 +239,23 @@ info "Starting services…"
 # On a Pi the first start unpacks the whole application into a fresh volume and
 # then runs the installer. Several minutes is normal; failing fast here would
 # be wrong.
-occ() { docker exec -u www-data "$NC_APP" php /var/www/html/occ "$@"; }
+occ()    { docker exec -u www-data "$NC_APP" php /var/www/html/occ "$@"; }
+in_app() { docker exec "$NC_APP" "$@" >/dev/null 2>&1; }
+
+# Detect the one first-run failure the installer cannot recover from.
+#
+# The image runs its installer only while /var/www/html/version.php is absent,
+# and it writes version.php in the same pass that populates the config
+# directory — config first, then version.php. So version.php present WITHOUT
+# the image's own apps.config.php means the config directory was already
+# non-empty at first start: the populate step was skipped, and version.php now
+# stops the entrypoint ever retrying. Nextcloud comes up uninstalled and 500s
+# on every request, forever. Waiting the full ten minutes for that is pointless
+# — nothing is coming.
+never_installs() {
+  in_app test -f /var/www/html/version.php \
+    && ! in_app test -f /var/www/html/config/apps.config.php
+}
 
 info "Waiting for Nextcloud to finish installing (this can take several minutes)…"
 INSTALLED=false
@@ -224,6 +263,27 @@ for _ in $(seq 1 120); do
   if occ status 2>/dev/null | grep -q 'installed: true'; then
     INSTALLED=true
     break
+  fi
+  if never_installs; then
+    HTML_VOL="$(docker volume ls -q --filter name=nextcloud-html | head -1)"
+    error "This Nextcloud can never finish installing.
+
+  /var/www/html/version.php exists, but the image's own config files were never
+  unpacked, so its entrypoint now skips both the setup and the installer on
+  every start. It will keep answering HTTP 500.
+
+  An earlier install.sh staged zz-homedrive.config.php into
+  ${DATA_PATH}/nextcloud/config before the very first start, which is what
+  caused this. This script no longer does that (see step 6), but the volume it
+  left behind has to go before a clean install can happen. There is no user
+  data at this point — Nextcloud never came up:
+
+    cd $PROJECT_DIR
+    docker compose down
+    sudo rm -f  ${DATA_PATH}/nextcloud/config/*.php
+    sudo rm -rf ${DATA_PATH}/nextcloud/db/pgdata
+    docker volume rm ${HTML_VOL:-<project>_nextcloud-html}
+    bash scripts/install.sh"
   fi
   sleep 5
 done
@@ -237,6 +297,21 @@ fi
 info "Nextcloud is installed."
 
 # ── 9. Configure ─────────────────────────────────────────────────────────────
+# Only now — with the image's own config files unpacked and config.php written
+# by the installer — is it safe to drop the overlay on top. See step 6.
+# php-fpm re-reads it per request, but opcache can serve the previous copy for
+# up to a minute, so restart the two containers that execute Nextcloud code
+# whenever the file actually changed.
+if stage_overlay; then
+  info "Restarting nextcloud-app and nextcloud-cron to pick it up…"
+  "${COMPOSE[@]}" restart nextcloud-app nextcloud-cron >/dev/null \
+    || warn "Could not restart the containers; the overlay applies within a minute anyway."
+  for _ in $(seq 1 60); do
+    if occ status 2>/dev/null | grep -q 'installed: true'; then break; fi
+    sleep 5
+  done
+fi
+
 # Tell Nextcloud that cron is driven externally (by nextcloud-cron). Left on
 # "AJAX" the background jobs only run when somebody has a browser tab open,
 # and expired file locks are one of the things those jobs release.

@@ -550,6 +550,52 @@ If `nextcloud-web` shows healthy but nothing answers, check `NEXTCLOUD_PORT` in 
 actually matches what you're requesting, and that a firewall rule (step 6 above) isn't
 blocking it from the device you're testing on.
 
+### `install.sh` times out and `status.php` answers 500 forever
+
+Symptom — `install.sh` gives up with *"Nextcloud did not report 'installed: true' within
+10 minutes"*, and `docker compose logs nextcloud-app` is nothing but:
+
+```
+Warning: /var/www/html/config/apcu.config.php differs from the latest version of this image …
+Warning: /var/www/html/config/apps.config.php differs from the latest version of this image …
+…
+10.89.0.6 - "GET /status.php" 500
+```
+
+Those warnings mean the files are **missing**, not edited — the image's check is a `cmp`
+against a file that isn't there. The image only unpacks its own config files while
+`/var/www/html/config` is still empty:
+
+```sh
+for dir in config data custom_apps themes; do
+  if [ ! -d "/var/www/html/$dir" ] || directory_empty "/var/www/html/$dir"; then
+    rsync … /usr/src/nextcloud/ /var/www/html/
+  fi
+done                                            # the image's docker-entrypoint.sh
+```
+
+Anything already sitting in `$DATA_PATH/nextcloud/config` at first start — including a
+pre-staged `zz-homedrive.config.php` — makes that test false. Nextcloud then boots without
+`apps.config.php`, `redis.config.php` and the rest, and 500s on every request. Worse, the
+same pass writes `version.php`, and its presence is what tells the entrypoint there is
+nothing to install, so no later start ever retries.
+
+`install.sh` stages the overlay after the install now (see step 6 in the script) and aborts
+early with these instructions if it finds the state. To recover — there is no user data yet,
+Nextcloud never came up:
+
+```bash
+cd ~/projects/home-services/home-drive
+docker compose down
+sudo rm -f  /mnt/data/nextcloud/config/*.php     # drop the pre-staged overlay
+sudo rm -rf /mnt/data/nextcloud/db/pgdata        # the installer may have half-written it
+docker volume rm $(docker volume ls -q --filter name=nextcloud-html)
+bash scripts/install.sh
+```
+
+A healthy first run says `Initializing nextcloud <version> …`, then `New nextcloud instance`,
+and prints **no** `differs from the latest version` warnings at all.
+
 ### Tailscale profile: everything is healthy but nothing answers on port 443
 
 Almost always a bad `serve.json`. `containerboot` expands **only** `${TS_CERT_DOMAIN}` in
