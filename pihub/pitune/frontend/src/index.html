@@ -14,6 +14,7 @@
       <button class="tab-btn active" data-tab="library">Library</button>
       <button class="tab-btn" data-tab="youtube">YouTube</button>
       <button class="tab-btn" data-tab="queue">Queue</button>
+      <button class="tab-btn" data-tab="discover">Discover</button>
     </nav>
   </header>
 
@@ -56,6 +57,30 @@
     <section id="tab-queue" class="tab-panel">
       <ul class="item-list" id="queue-list"></ul>
     </section>
+
+    <!-- Discover: not implemented yet. See app.js's Discover section and
+         README.md's "Discover (not yet implemented)". -->
+    <section id="tab-discover" class="tab-panel">
+      <div class="discover-placeholder">
+        <h2>Discover</h2>
+        <p>
+          Browse your library by <strong>sound</strong> instead of artist or album:
+          tempo, key and mood, with similar-sounding tracks grouped together.
+        </p>
+        <p class="hint">
+          Not implemented yet. This will run two analysis passes over your library on
+          demand, not automatically: audio analysis (tempo/key/mood) and similarity
+          grouping, both explained in README.md's Discover section. Both are CPU-heavy,
+          which is why this stays a manual, explicit action rather than something that
+          runs on every library scan.
+        </p>
+        <button id="discover-analyze-btn" disabled title="Not implemented yet">
+          Analyze library (not yet implemented)
+        </button>
+        <div id="discover-progress" class="hidden"></div>
+        <ul class="item-list" id="discover-results"></ul>
+      </div>
+    </section>
   </main>
 
   <footer class="player-bar">
@@ -84,6 +109,7 @@
 
   <audio id="audio" preload="none"></audio>
 
+  <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

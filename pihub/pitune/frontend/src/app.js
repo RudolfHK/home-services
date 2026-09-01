@@ -237,7 +237,36 @@
     if (audio.currentTime > 3) { audio.currentTime = 0; return; }
     playIndex(queueIndex - 1);
   });
-  audio.addEventListener("ended", () => playIndex(queueIndex + 1));
+
+  // ── Auto-save played YouTube tracks into the library ───────────────────
+  // Fires once a YouTube-sourced track finishes playing NATURALLY (this
+  // event, unlike skip/prev/next, only fires on real completion; those
+  // just replace audio.src instead). Server-side default is on
+  // (DOWNLOAD_ENABLED=true); a 403 here just means the operator turned it
+  // off, which isn't worth surfacing as an error to the listener.
+  const autoSavedVideoIds = new Set();
+
+  async function maybeAutoSaveToLibrary(track) {
+    if (!track || track.source !== "youtube" || !track.videoId) return;
+    if (autoSavedVideoIds.has(track.videoId)) return; // don't re-save a replay
+    autoSavedVideoIds.add(track.videoId);
+
+    try {
+      const headers = {};
+      if (window.PIHUB_API_TOKEN) headers["X-PiHub-Token"] = window.PIHUB_API_TOKEN;
+      const res = await fetch(`/api/save/${track.videoId}`, { method: "POST", headers });
+      if (!res.ok && res.status !== 403) {
+        console.warn("Auto-save to library failed:", await res.text());
+      }
+    } catch (err) {
+      console.warn("Auto-save to library failed:", err);
+    }
+  }
+
+  audio.addEventListener("ended", () => {
+    maybeAutoSaveToLibrary(queue[queueIndex]);
+    playIndex(queueIndex + 1);
+  });
   audio.addEventListener("play", () => { document.getElementById("btn-playpause").textContent = "⏸"; });
   audio.addEventListener("pause", () => { document.getElementById("btn-playpause").textContent = "▶"; });
 
@@ -435,7 +464,7 @@
           title: r.title,
           sub: r.artist,
           durationText: r.duration ? formatTime(r.duration) : "",
-          onClick: () => enqueue({ title: r.title, artist: r.artist, src: `/api/stream/${r.id}`, source: "youtube" }),
+          onClick: () => enqueue({ title: r.title, artist: r.artist, src: `/api/stream/${r.id}`, source: "youtube", videoId: r.id }),
         }));
       });
     } catch (err) {
@@ -446,6 +475,33 @@
       list.appendChild(errEl);
     }
   });
+
+  // ── Discover (not yet implemented) ─────────────────────────────────
+  // Scaffolding only, per README.md's Discover section: the UI and the
+  // shape of the calls it will make, wired to empty backend stubs
+  // (POST /api/discover/analyze, GET /api/discover/status,
+  // GET /api/discover/similar/{id} in app/main.py), none of which do
+  // anything yet. Deliberately not started automatically or on a
+  // schedule: both real algorithms behind this (raw audio analysis for
+  // tempo/key/mood, then Annoy for similarity grouping) are CPU-heavy
+  // enough on a Pi that starting them needs to stay an explicit, visible
+  // choice, not a side effect of opening this tab.
+  //
+  // Left as empty functions rather than removed entirely, so the actual
+  // implementation later has the UI hookup already in place and only
+  // needs to fill these in.
+  async function discoverStartAnalysis() {
+    // TODO: POST /api/discover/analyze, then poll discoverPollStatus().
+  }
+
+  async function discoverPollStatus() {
+    // TODO: GET /api/discover/status, update #discover-progress.
+  }
+
+  function discoverRenderResults(_similarTracks) {
+    // TODO: render #discover-results once /api/discover/similar/{id}
+    // returns something real.
+  }
 
   // ── Init ────────────────────────────────────────────────────────────
   renderQueue();

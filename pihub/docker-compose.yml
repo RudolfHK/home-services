@@ -227,22 +227,16 @@ services:
       TZ: ${TZ}
 
     volumes:
-      # MEDIA_LIBRARY_ROOT, when set, redirects only this, never
-      # downloads/ below, which stays under MEDIA_ROOT always. See
+      # MEDIA_LIBRARY_ROOT, when set, redirects only this, never downloads/,
+      # photos/ or backups/, which stay under MEDIA_ROOT always. See
       # README.md's "Mounting a Nextcloud folder as your media library".
+      # Read-only here; pitune-backend below has its own separate, narrower,
+      # read-write mount of just the music/YouTube subfolder inside this
+      # same tree, so Navidrome's own scan picks up saved tracks without
+      # this container ever being given write access itself.
       - type: bind
         source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/music
         target: /music
-        read_only: true
-        bind:
-          create_host_path: false
-      # Read-only: this is PiTune's yt-dlp downloads folder, not the curated
-      # library. Add it as a SECOND library from Navidrome's admin UI
-      # (Settings → Libraries) if you want saved YouTube tracks to show up —
-      # see pihub/pitune/backend/app/main.py.
-      - type: bind
-        source: ${MEDIA_ROOT}/downloads
-        target: /downloads
         read_only: true
         bind:
           create_host_path: false
@@ -274,12 +268,14 @@ services:
     environment:
       TZ: ${TZ}
       SEARCH_RESULT_LIMIT: ${SEARCH_RESULT_LIMIT:-20}
-      DOWNLOAD_ENABLED: ${DOWNLOAD_ENABLED:-false}
+      # On by default: the frontend auto-saves a YouTube track once it
+      # finishes playing. See app/main.py and README.md's Security model.
+      DOWNLOAD_ENABLED: ${DOWNLOAD_ENABLED:-true}
       # Empty, not "*" — see app/main.py's CORS_ORIGINS comment.
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       # Protects /api/save when DOWNLOAD_ENABLED=true — see app/main.py.
       API_TOKEN: ${API_TOKEN:-}
-      DOWNLOADS_PATH: /downloads
+      MUSIC_SAVE_PATH: /music/youtube
       # yt-dlp caches the expensive part of extraction here (notably the
       # parsed player-JS signature/nsig functions), keyed by YouTube player
       # version — reused across requests AND, with this on a named volume,
@@ -291,11 +287,17 @@ services:
       XDG_CACHE_HOME: /cache
 
     volumes:
-      # rw: this IS the writer for /api/save. Scoped to downloads/ only —
-      # never the music/ library itself. See app/main.py.
+      # rw: this IS the writer for /api/save, but scoped to just this one
+      # subfolder of the music library, never the rest of /music. This
+      # container has no `user:` override and runs as root (needed so a
+      # write here works regardless of whether MEDIA_LIBRARY_ROOT points at
+      # a plain MEDIA_ROOT-owned directory or one inside home-drive's
+      # Nextcloud data directory, owned by Nextcloud's own www-data uid at
+      # mode 750). See app/main.py and README.md's Security model for what
+      # that trade-off means and how to disable it (DOWNLOAD_ENABLED=false).
       - type: bind
-        source: ${MEDIA_ROOT}/downloads
-        target: /downloads
+        source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/music/YouTube
+        target: /music/youtube
         bind:
           create_host_path: false
       - type: bind
@@ -324,6 +326,17 @@ services:
     container_name: pihub-pitune-frontend
     restart: unless-stopped
     logging: *default-logging
+
+    environment:
+      # Templated into a same-origin config.js at container start (see
+      # frontend/docker-entrypoint.d/) so the browser's own auto-save
+      # request can set the X-PiHub-Token header pitune-backend requires.
+      # Readable from this page's own source, same as any client-side
+      # value; that's fine here, since the header's actual job is
+      # defeating a THIRD-PARTY site's blind cross-origin POST (which can't
+      # read this page's JS regardless), not hiding a secret from PiHub's
+      # own legitimate users. See app/main.py's require_token comment.
+      API_TOKEN: ${API_TOKEN:-}
 
     # PiTune's own internal composition (not a cross-product dependency —
     # see the file header) — its nginx proxies /api/ and /rest/ to these.
@@ -381,10 +394,10 @@ services:
         target: /config
         bind:
           create_host_path: false
-      # MEDIA_LIBRARY_ROOT, when set, redirects these three (and
-      # navidrome's music/ above), never downloads/, which stays under
-      # MEDIA_ROOT always. See README.md's "Mounting a Nextcloud folder
-      # as your media library".
+      # MEDIA_LIBRARY_ROOT, when set, redirects these four (and
+      # navidrome's music/ above), never downloads/ or backups/, which stay
+      # under MEDIA_ROOT always. See README.md's "Mounting a Nextcloud
+      # folder as your media library".
       - type: bind
         source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/videos
         target: /media/videos
@@ -400,6 +413,16 @@ services:
       - type: bind
         source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/shows
         target: /media/shows
+        read_only: true
+        bind:
+          create_host_path: false
+      # Pictures. A native Jellyfin "Photos" library type (Dashboard →
+      # Libraries → Add → Photos), not a separate app: it already covers
+      # browsing, thumbnails and slideshow playback without adding Immich
+      # or anything else to the stack.
+      - type: bind
+        source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/photos
+        target: /media/photos
         read_only: true
         bind:
           create_host_path: false

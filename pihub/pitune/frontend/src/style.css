@@ -81,6 +81,15 @@ main {
 }
 .login-box .hint { color: var(--text-dim); font-size: 0.85em; }
 
+.discover-placeholder {
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+}
+.discover-placeholder .hint { color: var(--text-dim); font-size: 0.85em; }
+.discover-placeholder button:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .breadcrumbs {
   display: flex;
   gap: 0.4em;

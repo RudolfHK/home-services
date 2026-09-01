@@ -27,14 +27,21 @@ logger = logging.getLogger("pitune.backend")
 logging.basicConfig(level=logging.INFO)
 
 SEARCH_RESULT_LIMIT = int(os.environ.get("SEARCH_RESULT_LIMIT", "20"))
-DOWNLOAD_ENABLED = os.environ.get("DOWNLOAD_ENABLED", "false").strip().lower() == "true"
-# Deliberately NOT the curated music library: /api/save writes into PiHub's
-# shared downloads/ folder (see pihub/docker-compose.yml), never into
-# MUSIC_PATH. Navidrome doesn't scan it by default — add it as a second
-# library from its admin UI (Settings → Libraries) once you're happy with
-# what's landing there. That keeps this endpoint's blast radius to one
-# disposable folder instead of the library you've spent years organizing.
-DOWNLOADS_PATH = Path(os.environ.get("DOWNLOADS_PATH", "/downloads"))
+# On by default: the frontend calls /api/save automatically once a
+# YouTube-sourced track finishes playing (see app.js's maybeAutoSave). Set
+# to false in .env to turn that off, or to reject direct calls to the
+# endpoint entirely.
+DOWNLOAD_ENABLED = os.environ.get("DOWNLOAD_ENABLED", "true").strip().lower() == "true"
+# A "YouTube" subfolder INSIDE the actual scanned music library (see
+# pihub/docker-compose.yml: this container is only ever given write access
+# to that one subfolder, never the rest of /music), not a separate
+# disposable folder. Navidrome picks up new files here on its own regular
+# scan (ND_SCANSCHEDULE), no manual "add a second library" step needed. If
+# MEDIA_LIBRARY_ROOT points this at a folder inside home-drive's Nextcloud,
+# Nextcloud's own index does NOT learn about these files automatically;
+# run `occ files:scan --all` afterward (or on a schedule). See
+# ../../README.md's "Mounting a Nextcloud folder as your media library".
+MUSIC_SAVE_PATH = Path(os.environ.get("MUSIC_SAVE_PATH", "/music/youtube"))
 # Empty, not "*": the frontend and this API are always same-origin (served
 # through the same nginx), so legitimate use never needs a cross-origin
 # allowance. See require_token below for why this alone wouldn't be enough
@@ -206,14 +213,14 @@ async def save_to_library(video_id: str = PathParam(..., min_length=11, max_leng
             status_code=403,
             detail="Saving to the library is disabled (set DOWNLOAD_ENABLED=true in .env)",
         )
-    if not DOWNLOADS_PATH.is_dir():
-        raise HTTPException(status_code=500, detail=f"{DOWNLOADS_PATH} is not mounted")
+    if not MUSIC_SAVE_PATH.is_dir():
+        raise HTTPException(status_code=500, detail=f"{MUSIC_SAVE_PATH} is not mounted")
 
     def _download() -> str:
         opts = {
             **_BASE_OPTS,
             "format": "bestaudio/best",
-            "outtmpl": str(DOWNLOADS_PATH / "%(uploader)s - %(title)s.%(ext)s"),
+            "outtmpl": str(MUSIC_SAVE_PATH / "%(uploader)s - %(title)s.%(ext)s"),
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
@@ -230,3 +237,49 @@ async def save_to_library(video_id: str = PathParam(..., min_length=11, max_leng
         raise HTTPException(status_code=502, detail=f"Download failed: {exc}")
 
     return {"saved": True, "title": title}
+
+
+# ── Discover: not implemented yet ───────────────────────────────────────
+# Scaffolding only, matching frontend/src/app.js's Discover section and
+# README.md's Discover section. Two real algorithms are meant to sit behind
+# this, neither implemented here:
+#
+#   1. Raw audio analysis: run each library track through a model that
+#      estimates its acoustic properties directly from the waveform (tempo,
+#      key, mood/valence-arousal), the way Spotify's own audio features API
+#      works. Output would be one small feature vector per track, cached
+#      somewhere durable (not recomputed on every request) so this only
+#      needs to run once per track, not once per page load.
+#   2. Annoy (Approximate Nearest Neighbor library, from Spotify) built over
+#      those feature vectors, so "songs similar to this one" becomes a
+#      nearest-neighbor lookup in that vector space instead of a raw
+#      metadata match (same artist/genre tag). This is what actually powers
+#      a "similar tracks" or "browse by mood" experience instead of just
+#      browsing by artist/album.
+#
+# Both are CPU-heavy enough on a Pi that they must stay something the user
+# explicitly starts (POST /api/discover/analyze), never something that runs
+# automatically off a library scan or a schedule; see README.md's Discover
+# section for the resource-cost reasoning. Every endpoint below is a stub:
+# no model is loaded, no vectors are built, no analysis runs.
+
+@app.post("/api/discover/analyze", dependencies=[Depends(require_token)])
+async def discover_start_analysis():
+    """Would kick off the audio-analysis + Annoy-index-build pass over the
+    whole library, as a background job (this WILL take minutes to hours on a
+    Pi, so it cannot be a request/response cycle). Not implemented."""
+    raise HTTPException(status_code=501, detail="Discover is not implemented yet")
+
+
+@app.get("/api/discover/status")
+async def discover_status():
+    """Would report whether an analysis run is in progress, finished, or has
+    never run, plus progress (tracks analyzed / total). Not implemented."""
+    return {"state": "not_implemented", "progress": None}
+
+
+@app.get("/api/discover/similar/{track_id}")
+async def discover_similar(track_id: str):
+    """Would return the nearest neighbors of track_id in the Annoy index
+    built by discover_start_analysis. Not implemented."""
+    raise HTTPException(status_code=501, detail="Discover is not implemented yet")

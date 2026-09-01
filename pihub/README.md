@@ -67,10 +67,10 @@ from `.env`'s `COMPOSE_PROFILES` without affecting the others. See
   `MEDIA_ROOT` uses `create_host_path: false`, so a disconnected drive means
   Navidrome/Jellyfin's containers simply don't start, and the homepage
   dashboard shows them as "not found," not a crash loop.
-- **`/api/save` writes to a disposable `downloads/` folder, never the curated
-  music library.** See `pitune/backend/app/main.py`. Add `downloads/` as a
-  second Navidrome library from its own admin UI once you trust what's
-  landing there.
+- **`/api/save` writes into `music/YouTube/`, inside the actual library, and
+  runs automatically once a YouTube track finishes playing.** On by default
+  (`DOWNLOAD_ENABLED=true`). Scoped to that one subfolder, never the rest of
+  `music/`. See `pitune/backend/app/main.py`.
 - **Jellyfin's healthcheck can't be a `/health` path check.** Setting Base
   URL (required; see Quick start) moves ALL of Jellyfin's routes under that
   prefix, `/health` included. A check hardcoded to `/health` would pass
@@ -189,8 +189,10 @@ admin UI, which PiHub doesn't reimplement):
 1. Open `http://<pi>:4533/` and create your first Navidrome user. PiTune's
    own Library tab logs in with that account.
 2. Open `http://<pi>:8096/`, run Jellyfin's setup wizard, add your
-   videos/movies/shows libraries, then go to **Dashboard → Networking →
-   Base URL**, set it to `/jellyfin`, and restart the `jellyfin` service
+   videos/movies/shows libraries plus a **Photos**-type library pointed at
+   `/media/photos` (Dashboard → Libraries → Add Media Library → Content
+   type: Photos), then go to **Dashboard → Networking → Base URL**, set it
+   to `/jellyfin`, and restart the `jellyfin` service
    (`./pihub restart jellyfin`). Without this, Jellyfin's own links and
    websocket calls are generated without the prefix and break under the
    `/jellyfin/` proxy path.
@@ -216,55 +218,57 @@ pihub start tailscale     # optional — see Remote access via Tailscale
 | Variable | Default | What it controls |
 |---|---|---|
 | `COMPOSE_PROFILES` | `core,homepage,pitune,jellyfin` | Which products a bare `docker compose up -d` brings up. Narrowing this doesn't limit `pihub`; see `pihub`'s `compose()` wrapper. |
-| `MEDIA_ROOT` | `/media/storage` | The external drive. `setup.sh` creates `music/ videos/ movies/ shows/ downloads/ photos/ backups/` under it. |
+| `MEDIA_ROOT` | `/media/storage` | The external drive. `setup.sh` creates `music/ (with music/YouTube/) videos/ movies/ shows/ photos/ downloads/ backups/` under it. |
 | `NAVIDROME_DATA_PATH` / `JELLYFIN_CONFIG_PATH` | `./navidrome/data` / `./jellyfin/config` | Per-service config, deliberately off `MEDIA_ROOT`, since a missing media drive must never take a service's own config down with it. |
 | `PIHUB_PORT` | `80` | The one port for daily use. |
 | `NAVIDROME_PORT` / `JELLYFIN_PORT` | `4533` / `8096` | Published directly too: Navidrome for its one-time admin/account setup, Jellyfin for its setup wizard and for troubleshooting hardware transcoding without the proxy in the way. |
 | `PUID` / `PGID` | `1000`/`1000` | uid/gid Navidrome runs as, so it can read `MEDIA_ROOT`. |
-| `MEDIA_LIBRARY_ROOT` | unset (falls back to `MEDIA_ROOT`) | Redirects only `music/videos/movies/shows` to a different parent directory, e.g. a folder inside home-drive's Nextcloud. See [Mounting a Nextcloud folder as your media library](#mounting-a-nextcloud-folder-as-your-media-library-optional) below. |
+| `MEDIA_LIBRARY_ROOT` | unset (falls back to `MEDIA_ROOT`) | Redirects only `music/videos/movies/shows/photos` to a different parent directory, e.g. a folder inside home-drive's Nextcloud. See [Mounting a Nextcloud folder as your media library](#mounting-a-nextcloud-folder-as-your-media-library-optional) below. |
 | `MEDIA_GID` | `0` (no-op) | Extra group Navidrome/Jellyfin are also given read access through. Only needed alongside `MEDIA_LIBRARY_ROOT` above, when it points at a directory owned by a different uid/gid than `PUID`/`PGID`. |
-| `DOWNLOAD_ENABLED` | `false` | Enables PiTune's "save this YouTube track" button, writing MP3s into `MEDIA_ROOT/downloads/`. |
+| `DOWNLOAD_ENABLED` | `true` | Once a YouTube track finishes playing, PiTune automatically saves it into `music/YouTube/`, inside the actual library. Set to `false` to turn this off. |
 | `YTDLP_COOKIES_HOST_FILE` | unset | Path to a Netscape-format `cookies.txt`, for age-restricted/region-locked videos. |
 
 ## Storage layout
 
 ```
 ${MEDIA_ROOT}/
-├── music/       → Navidrome (read-only)
-├── videos/      → Jellyfin, general library (read-only)
-├── movies/      → Jellyfin, movies library (read-only)
-├── shows/       → Jellyfin, TV library (read-only)
-├── downloads/   → PiTune's yt-dlp saves (read-write for pitune-backend only)
-├── photos/      → reserved for a future Immich, nothing mounts it yet
-└── backups/     → scripts/backup.sh's default destination
+├── music/           → Navidrome (read-only)
+│   └── YouTube/     → PiTune's auto-saved tracks (read-write for pitune-backend only)
+├── videos/          → Jellyfin, general library (read-only)
+├── movies/          → Jellyfin, movies library (read-only)
+├── shows/           → Jellyfin, TV library (read-only)
+├── photos/          → Jellyfin, Photos library (read-only)
+├── downloads/       → unused by default, free for your own manual use
+└── backups/         → scripts/backup.sh's default destination
 ```
 
-If `MEDIA_LIBRARY_ROOT` is set, only `music/videos/movies/shows` move there;
-`downloads/photos/backups` always stay under `MEDIA_ROOT` regardless. See
+If `MEDIA_LIBRARY_ROOT` is set, `music/videos/movies/shows/photos` move
+there; `downloads/backups` always stay under `MEDIA_ROOT` regardless. See
 below for why.
 
 ## Mounting a Nextcloud folder as your media library (optional)
 
 If this repo's `home-drive` stack is already running on the **same Pi**
-with its optional Nextcloud drive installed (this only works as a
-same-machine bind mount, not over the network), you can point PiHub's
-`music/videos/movies/shows` straight at a folder inside it, so adding,
-moving, or deleting files through Nextcloud's own web UI, sync clients, or
-phone app is what actually manages your library, instead of keeping a
-separate folder in sync by hand.
+(this only works as a same-machine bind mount, not over the network), you
+can point PiHub's `music/videos/movies/shows/photos` straight at a folder
+inside its Nextcloud data directory, so adding, moving, or deleting files
+through Nextcloud's own web UI, sync clients, or phone app is what actually
+manages your library, instead of keeping a separate folder in sync by hand.
+This is also how a saved YouTube track (see `music/YouTube/` above) ends up
+editable from any device running the Nextcloud client, not just from the Pi.
 
 Nextcloud stores every user's files on the host at
 `${DATA_PATH}/nextcloud/data/<nextcloud-username>/files/...`, where
 `DATA_PATH` is set in **home-drive's own** `.env` (not PiHub's). So if
 home-drive's `DATA_PATH=/mnt/data` and your Nextcloud username is `admin`,
-a `Media` folder created in the Nextcloud web UI lives on disk at
-`/mnt/data/nextcloud/data/admin/files/Media`, and PiHub expects
-`music/`, `videos/`, `movies/`, and `shows/` subfolders (those exact
+a `media` folder created in the Nextcloud web UI lives on disk at
+`/mnt/data/nextcloud/data/admin/files/media`, and PiHub expects `music/`,
+`videos/`, `movies/`, `shows/`, and `photos/` subfolders (those exact
 lowercase names) underneath it.
 
 **Why you can't just point `MEDIA_LIBRARY_ROOT` there and go.**
-home-drive's own `scripts/install-drive.sh` deliberately `chown`s the
-whole `${DATA_PATH}/nextcloud/data` tree to Nextcloud's own internal user
+home-drive's own `scripts/install.sh` deliberately `chown`s the whole
+`${DATA_PATH}/nextcloud/data` tree to Nextcloud's own internal user
 (commonly uid/gid 33, detected per-image, not hardcoded) and sets it to
 mode `750`, specifically so nothing outside the Nextcloud container can
 read it by default. Navidrome runs as `PUID:PGID` (1000:1000 by default),
@@ -274,24 +278,25 @@ fails with a permission error.
 **The fix**, without touching home-drive's own ownership or loosening its
 permissions:
 
-1. In Nextcloud's own web UI (or a sync client), create a `Media` folder
-   under your user, then `music`, `videos`, `movies`, and `shows`
-   subfolders inside it, and put the matching files in each. Creating
-   them through Nextcloud itself, rather than `mkdir` on the host, means
-   Nextcloud's own index already knows about them; see home-drive's
-   [docs/DRIVE.md](../home-drive/docs/DRIVE.md) for what goes wrong if
-   you add files from outside instead.
+1. In Nextcloud's own web UI (or a sync client), create a `media` folder
+   under your user, then `music`, `videos`, `movies`, `shows`, and
+   `photos` subfolders inside it, and put the matching files in each.
+   Creating them through Nextcloud itself, rather than `mkdir` on the
+   host, means Nextcloud's own index already knows about them from the
+   start; see home-drive's [README.md](../home-drive/README.md#the-one-rule-nothing-else-writes-into-the-drive-without-telling-nextcloud)
+   for what goes wrong if you add files from outside instead, and how to
+   recover when something (PiTune's own auto-save included) has to.
 2. Find the group that owns the Nextcloud data directory:
    ```bash
    stat -c '%g' /mnt/data/nextcloud/data     # replace with home-drive's actual DATA_PATH
    ```
 3. In PiHub's `.env`, set `MEDIA_GID` to that number, and
-   `MEDIA_LIBRARY_ROOT` to the `Media` folder itself, not its subfolders
-   (the compose file appends `music`/`videos`/`movies`/`shows` on its
-   own):
+   `MEDIA_LIBRARY_ROOT` to the `media` folder itself, not its subfolders
+   (the compose file appends `music`/`videos`/`movies`/`shows`/`photos`
+   on its own):
    ```bash
    MEDIA_GID=33
-   MEDIA_LIBRARY_ROOT=/mnt/data/nextcloud/data/admin/files/Media
+   MEDIA_LIBRARY_ROOT=/mnt/data/nextcloud/data/admin/files/media
    ```
    `MEDIA_GID` adds that group as a *supplementary* group on the
    `navidrome` and `jellyfin` containers (`group_add` in
@@ -300,23 +305,32 @@ permissions:
    the `750` permission's own group bits (`r-x`, no write): neither
    container can write into your Nextcloud files even if something else
    asked them to.
-4. Recreate the affected containers so the new mounts and group take
+4. Also create `media/music/YouTube` the same way, through Nextcloud, if
+   you want saved YouTube tracks to land inside Nextcloud too (optional;
+   see the next paragraph for what changes if you do).
+5. Recreate the affected containers so the new mounts and group take
    effect:
    ```bash
    pihub restart pitune
    pihub restart jellyfin
    ```
 
-**`downloads/`, `photos/`, and `backups/` are never redirected by
-`MEDIA_LIBRARY_ROOT`, and that's deliberate.** `pitune-backend` (the
-writer behind `/api/save`) has no `user:` override and runs as root,
-which ignores Unix permissions on anything its mounts can reach. If
-`downloads/` also lived inside Nextcloud's data directory, an enabled
-`DOWNLOAD_ENABLED` would let it write files there that Nextcloud's own
-database has no idea exist, risking the exact corruption home-drive's own
-`docs/DRIVE.md` warns about under "The one rule: nothing else writes into
-the drive." Keeping `downloads/` (and `photos/`, `backups/`) on a plain,
-non-Nextcloud path avoids that regardless of `DOWNLOAD_ENABLED`.
+**`downloads/` and `backups/` are never redirected by `MEDIA_LIBRARY_ROOT`,
+and that's deliberate; `music/YouTube/` is different.** `pitune-backend`
+(the writer behind `/api/save`) has no `user:` override and runs as root,
+which ignores Unix permissions on anything its mounts can reach; that is
+what makes a write into a `750`, Nextcloud-owned `music/YouTube/` work at
+all. Unlike `downloads/`/`backups/`, which have no reason to ever exist
+inside Nextcloud, `music/YouTube/` is meant to end up wherever the rest of
+`music/` lives, Nextcloud-backed or not, since a saved track only earns its
+place in your library the same way anything else does. The trade-off this
+carries: if `MEDIA_LIBRARY_ROOT` points into Nextcloud, its own database
+does **not** learn about a newly-saved file automatically, exactly the
+"nothing else writes into the drive" case home-drive's README describes.
+Run `docker exec -u www-data homedrive-nextcloud-app php occ files:scan --all`
+after the fact (or put it on the same schedule as PiTune's auto-saves,
+however often that ends up being for you), or set `DOWNLOAD_ENABLED=false`
+if you'd rather this never happens automatically.
 
 New files added through Nextcloud show up in PiTune/Jellyfin once their
 own scans pick them up: Navidrome within `ND_SCANSCHEDULE` (every hour by
@@ -324,6 +338,40 @@ default) or a manual rescan from its admin UI; Jellyfin on its own library
 scan schedule (**Dashboard → Libraries → Scan All Libraries** to force
 one). Nothing Nextcloud-side needs to know either is reading from here,
 since both only ever read.
+
+## Discover (not yet implemented)
+
+PiTune's **Discover** tab is scaffolding for a Spotify-style "browse your
+library by sound" feature: find tracks that sound like this one, or like
+"upbeat" or "late night," instead of only ever browsing by artist or album.
+The UI tab and empty backend endpoints exist (`pihub/pitune/frontend/src/app.js`'s
+Discover section, `pihub/pitune/backend/app/main.py`'s `/api/discover/*`
+routes); nothing behind them runs any analysis yet.
+
+The design, for whoever implements it next, is two passes:
+
+1. **Raw audio analysis.** Run each library track through a model that
+   estimates its acoustic properties directly from the waveform, the way
+   Spotify's own audio features API works: tempo (BPM), musical key, and a
+   mood/valence-arousal estimate. Output is one small feature vector per
+   track. This has to be cached somewhere durable (a small local database,
+   not recomputed per request) since it's the expensive part.
+2. **Annoy** (Approximate Nearest Neighbor, the library Spotify itself
+   published for exactly this) built as an index over those feature
+   vectors, so "tracks similar to this one" becomes a nearest-neighbor
+   lookup in that vector space, and browsing by mood/energy becomes
+   clustering in the same space, instead of either needing a raw metadata
+   match (same genre tag) that misses most real similarity.
+
+**Why this stays manual, not automatic.** Both passes are real CPU work,
+the first pass especially: analyzing an entire library is closer to
+transcoding every track once than to a metadata scan. Running it
+automatically on every Navidrome library scan (every hour, by default)
+would make PiTune noticeably slower on a Pi for no benefit most of the
+time. That's why `POST /api/discover/analyze` exists as an explicit,
+separate action (the "Analyze library" button in the Discover tab, wired
+but disabled until this is implemented) rather than a side effect of
+anything else in this stack.
 
 ## Raspberry Pi considerations
 
@@ -361,10 +409,10 @@ below, rather than exposing `PIHUB_PORT` directly to the internet.
 |---|---|
 | No raw Docker socket in homepage | It talks to `docker-proxy` (a `tecnativa/docker-socket-proxy` sidecar) instead, which forwards only the specific endpoints homepage needs. `EXEC=0` and everything else this stack doesn't use is off. A bug or a compromised dependency in homepage's own code only gets what the proxy allows through, never the whole Docker API. See `homepage/README.md`'s security model and `docker-compose.yml`'s `docker-proxy` service. |
 | homepage's config-driven container allow-list | On top of the proxy: every start/stop/restart/logs call is resolved against `homepage/config/services.yml`'s fixed container list; the API never accepts a raw container name from a caller. |
-| `API_TOKEN` on every mutating endpoint (homepage's start/stop/restart/logs, PiTune's `/api/save`) | Without it, those endpoints have no auth at all, and a plain unauthenticated POST is a "simple request" a browser sends cross-origin regardless of CORS. CORS only gates whether the *response* can be read, not whether the request is *sent*. `scripts/setup.sh` generates one automatically. See `homepage/backend/main.py`'s comments for the full reasoning, including its honest limit: this stops a malicious *webpage*, not a compromised device with direct LAN access. |
+| `API_TOKEN` on every mutating endpoint (homepage's start/stop/restart/logs, PiTune's `/api/save`, once implemented PiTune's `/api/discover/analyze`) | Without it, those endpoints have no auth at all, and a plain unauthenticated POST is a "simple request" a browser sends cross-origin regardless of CORS. CORS only gates whether the *response* can be read, not whether the request is *sent*. `scripts/setup.sh` generates one automatically. PiTune's frontend is handed this value at container start (templated into `config.js`, see `pitune/frontend/docker-entrypoint.d/`) so its own automatic save-on-finish call can set the header; that's a deliberate, safe exception, not a leak, since the header's real job is defeating a *third-party* site's blind cross-origin POST, which can't read PiTune's own page regardless. See `homepage/backend/main.py`'s comments for the full reasoning, including its honest limit: this stops a malicious *webpage*, not a compromised device with direct LAN access. |
 | `CORS_ORIGINS` empty by default, not `*` | Every frontend here is always same-origin with its own API (reached through nginx), so legitimate use never needs a cross-origin allowance. |
 | Security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, a `Content-Security-Policy` for homepage and PiTune) | Set at PiHub's central nginx and, for homepage, also in its own FastAPI app (so its standalone deployment mode is covered too; nginx hides the duplicate). Not applied to Jellyfin's own responses: its player needs `blob:`/worker allowances for transcoding that aren't safe to guess at from outside its own app. |
-| Media library mounts are `read_only: true` everywhere except PiTune's `downloads/` | Navidrome and Jellyfin can't be tricked into writing into your library; the one writer (`pitune-backend`) is scoped to a disposable folder, not the library itself. |
+| Media library mounts are `read_only: true` everywhere except PiTune's `music/YouTube/` | Navidrome and Jellyfin can't be tricked into writing into your library; the one writer (`pitune-backend`) is scoped to that one subfolder, never the rest of `music/` or any other media type. |
 | `no-new-privileges` on every container | Standard defense-in-depth. |
 | Video-ID validation in pitune-backend | YouTube video IDs are checked against `^[A-Za-z0-9_-]{11}$` before reaching a `yt-dlp` command line, so a crafted ID can't be parsed as a CLI flag. |
 | Each product manages its own accounts | PiHub doesn't invent a login system: Navidrome and Jellyfin keep their own, and PiTune's UI just forwards Subsonic credentials to Navidrome. |
