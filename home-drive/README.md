@@ -587,11 +587,17 @@ Nextcloud never came up:
 ```bash
 cd ~/projects/home-services/home-drive
 docker compose down
-sudo rm -f  /mnt/data/nextcloud/config/*.php     # drop the pre-staged overlay
-sudo rm -rf /mnt/data/nextcloud/db/pgdata        # the installer may have half-written it
+sudo find /mnt/data/nextcloud/config -maxdepth 1 -name '*.php' -delete   # drop the pre-staged overlay
+sudo rm -rf /mnt/data/nextcloud/db/pgdata                                # the installer may have half-written it
 docker volume rm $(docker volume ls -q --filter name=nextcloud-html)
 bash scripts/install.sh
 ```
+
+Use `find -delete`, not `rm -f .../*.php`: that glob is expanded by *your own shell* before
+`sudo` ever runs, and `config/` is mode `750` owned by the web user, so an ordinary user's
+shell can't even list it to match the glob. Bash then passes the literal, unmatched string
+`*.php` through, and `rm -f` reports no error and silently deletes nothing at all — the
+overlay is still there afterward, and every symptom above just repeats.
 
 A healthy first run says `Initializing nextcloud <version> …`, then `New nextcloud instance`,
 and prints **no** `differs from the latest version` warnings at all.
@@ -633,9 +639,39 @@ specifically to fail during the throwaway-server window (TCP-only, never socket-
 this can't happen on a fresh install anymore. If you hit this anyway, `install.sh` detects
 it directly (distinct from the message above — same section, different cause) and retries
 by restarting `nextcloud-app` once the database has had time to settle, since the fix really
-is just retrying the one-shot install after the real server is up. If it still fails after
-that automatic retry, something else is wrong with the database itself; the error names
-the exact commands to check that directly.
+is just retrying the one-shot install after the real server is up.
+
+**If restarting `nextcloud-app` doesn't help, check for a config.php that already exists**
+— this is a second, different cause that produces the *identical* error message, and no
+amount of restarting or waiting fixes it:
+
+```bash
+docker exec homedrive-nextcloud-app test -f /var/www/html/config/config.php && echo EXISTS
+sudo cat /mnt/data/nextcloud/config/config.php | grep -E 'dbhost|dbname|dbuser|installed'
+```
+
+If `config.php` already exists and claims `'installed' => true`, Nextcloud never attempts a
+fresh install at all — it goes straight to using whatever database settings are already in
+that file. If `dbhost` there isn't `nextcloud-db`, the file is left over from a **different,
+older Nextcloud install** entirely (a different `dbhost`/`dbname`/`dbuser`, possibly an old
+Tailscale-hostname-based `trusted_domains` entry from before this stack existed in its
+current form), not anything this stack's own `install.sh` ever wrote. `install.sh` detects
+this distinctly too (a config.php already existing is not the startup race the automatic
+retry above is for) and tells you directly rather than retrying uselessly. There is no user
+data at this point on *this* stack — that stale file claiming `installed: true` is exactly
+why Nextcloud never got the chance to create any of its own:
+
+```bash
+docker compose down
+sudo find /mnt/data/nextcloud/config -maxdepth 1 -name '*.php' -delete
+sudo rm -rf /mnt/data/nextcloud/db/pgdata
+docker volume rm $(docker volume ls -q --filter name=nextcloud-html)
+bash scripts/install.sh
+```
+
+(Same `find -delete`, not `rm -f .../*.php`, and for the same reason as the section above —
+that glob is expanded by your own shell before `sudo` runs, and can't match anything in this
+`750`, web-user-owned directory, so `rm -f` silently deletes nothing.)
 
 ### Tailscale profile: everything is healthy but nothing answers on port 443
 

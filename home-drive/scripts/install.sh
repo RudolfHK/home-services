@@ -16,7 +16,9 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="$PROJECT_DIR/.env"
 COMPOSE=(docker compose -f "$PROJECT_DIR/docker-compose.yml" --env-file "$ENV_FILE")
 
-NC_SERVICES=(nextcloud-db nextcloud-redis nextcloud-app nextcloud-web nextcloud-cron)
+# Everything except nextcloud-web, brought up first and separately — see
+# step 7's comment for why.
+NC_SERVICES_CORE=(nextcloud-db nextcloud-redis nextcloud-app nextcloud-cron)
 NC_APP="homedrive-nextcloud-app"
 
 ASSUME_YES="${HOMEDRIVE_ASSUME_YES:-false}"
@@ -232,8 +234,20 @@ stage_overlay() {
 info "Validating docker-compose.yml…"
 "${COMPOSE[@]}" config --quiet || error "docker-compose.yml did not validate against .env."
 
+# nextcloud-web is deliberately NOT started here. It depends_on nextcloud-app
+# with condition: service_healthy, and `docker compose up` enforces that
+# itself with its own timeout on the whole `up` command — a timeout that has
+# nothing to do with, and is considerably less patient than, step 8's wait
+# loop below. A first install slow enough to still be unpacking/installing
+# when compose's own patience runs out fails the WHOLE `up -d` outright (and
+# aborts this script, under set -e) before step 8's loop, which is the thing
+# actually built to tolerate exactly that, ever gets to run. Starting
+# everything nextcloud-app itself needs first, waiting for step 8 to confirm
+# it the slow way, and only then starting nextcloud-web — which by that
+# point finds nextcloud-app already healthy and returns immediately — avoids
+# the false failure entirely.
 info "Starting services…"
-"${COMPOSE[@]}" up -d "${NC_SERVICES[@]}"
+"${COMPOSE[@]}" up -d "${NC_SERVICES_CORE[@]}"
 
 # ── 8. Wait for the first-run install ────────────────────────────────────────
 # On a Pi the first start unpacks the whole application into a fresh volume and
@@ -304,12 +318,54 @@ for _ in $(seq 1 120); do
 
     cd $PROJECT_DIR
     docker compose down
-    sudo rm -f  ${DATA_PATH}/nextcloud/config/*.php
+    sudo find ${DATA_PATH}/nextcloud/config -maxdepth 1 -name '*.php' -delete
     sudo rm -rf ${DATA_PATH}/nextcloud/db/pgdata
     docker volume rm ${HTML_VOL:-<project>_nextcloud-html}
-    bash scripts/install.sh"
+    bash scripts/install.sh
+
+  Use 'find -delete', not 'rm -f .../*.php': that glob is expanded by YOUR
+  shell before sudo ever runs, and this directory is mode 750 owned by the
+  web user, so an ordinary user's shell can't even list it to match the
+  glob — bash then passes the literal, unmatched string through, and rm -f
+  silently deletes nothing at all while reporting no error whatsoever."
   fi
   if db_connection_failed; then
+    # A config.php that already exists is a different, unfixable-by-retry
+    # cause: it means SOME install already finished (possibly a different,
+    # older one entirely — see below), so this container never attempts a
+    # fresh one, and keeps using whatever is in that file, forever, no
+    # matter how many times it restarts.
+    if in_app test -f /var/www/html/config/config.php; then
+      HTML_VOL="$(docker volume ls -q --filter name=nextcloud-html | head -1)"
+      error "Nextcloud's automatic install can't reach the database, and
+  /var/www/html/config/config.php already exists.
+
+  That means this is not the startup race this script's automatic retry
+  (below, for when config.php does NOT already exist) is meant for — a
+  container that already has a config.php doesn't attempt a fresh install
+  at all, so restarting it changes nothing. Check what's actually in it:
+
+    sudo cat ${DATA_PATH}/nextcloud/config/config.php | grep -E 'dbhost|dbname|dbuser|installed'
+
+  If dbhost is anything other than 'nextcloud-db' (127.0.0.1, localhost, a
+  different container name…), this file is left over from a DIFFERENT
+  Nextcloud install entirely — nothing this stack's own install.sh ever
+  wrote. There is no user data at this point on THIS stack; that config.php
+  already claiming 'installed' => true is exactly why Nextcloud never got
+  the chance to create any:
+
+    docker compose down
+    sudo find ${DATA_PATH}/nextcloud/config -maxdepth 1 -name '*.php' -delete
+    sudo rm -rf ${DATA_PATH}/nextcloud/db/pgdata
+    docker volume rm ${HTML_VOL:-<project>_nextcloud-html}
+    bash scripts/install.sh
+
+  Use 'find -delete', not 'rm -f .../*.php': that glob is expanded by YOUR
+  shell before sudo ever runs, and this directory is mode 750 owned by the
+  web user, so an ordinary user's shell can't even list it to match the
+  glob — bash then passes the literal, unmatched string through, and rm -f
+  silently deletes nothing at all while reporting no error whatsoever."
+    fi
     if [[ "$RETRIED_DB_INSTALL" == "true" ]]; then
       error "Nextcloud's automatic install still cannot reach the database after a retry.
 
@@ -342,6 +398,11 @@ if [[ "$INSTALLED" != "true" ]]; then
   exit 1
 fi
 info "Nextcloud is installed."
+
+# Only now: nextcloud-app is already confirmed healthy, so nextcloud-web's
+# own depends_on condition is satisfied immediately. See step 7's comment.
+info "Starting nextcloud-web…"
+"${COMPOSE[@]}" up -d nextcloud-web
 
 # ── 9. Configure ─────────────────────────────────────────────────────────────
 # Only now — with the image's own config files unpacked and config.php written
