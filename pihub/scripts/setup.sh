@@ -5,6 +5,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Reads one KEY=value out of .env, tolerating both a missing file and a
+# missing key. Without the `|| true`, `set -o pipefail` turns an ordinary
+# grep miss into a fatal exit with no message at all — the script simply
+# stops mid-run — which is a miserable thing to debug. Every read of .env in
+# this script goes through here for that reason.
+env_value() {
+  [ -f .env ] || return 0
+  grep -E "^$1=" .env | tail -n1 | cut -d= -f2- || true
+}
+
 echo "== PiHub setup =="
 echo
 
@@ -29,7 +39,7 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 # ── 2. Ask for the media storage path ───────────────────────────────────
-default_media_root="/media/storage"
+default_media_root="/mnt/data/pihub"
 read -rp "Media storage path [$default_media_root]: " media_root
 media_root="${media_root:-$default_media_root}"
 
@@ -38,10 +48,7 @@ media_root="${media_root:-$default_media_root}"
 # a proposal — creating the folder tree at the new path while compose keeps
 # binding the old one is exactly how you get "bind source path does not
 # exist" at `up` time (the binds set create_host_path: false on purpose).
-env_media_root=""
-if [ -f .env ]; then
-  env_media_root="$(grep -E '^MEDIA_ROOT=' .env | tail -n1 | cut -d= -f2-)"
-fi
+env_media_root="$(env_value MEDIA_ROOT)"
 
 if [ -n "$env_media_root" ] && [ "$env_media_root" != "$media_root" ]; then
   echo
@@ -94,7 +101,7 @@ mkdir -p ./navidrome/data ./jellyfin/config
 # Nextcloud's to create, not ours (creating them behind its back leaves them
 # outside its index). Check and stop, rather than mkdir.
 if [ -f .env ]; then
-  media_library_root="$(grep -E '^MEDIA_LIBRARY_ROOT=' .env | tail -n1 | cut -d= -f2-)"
+  media_library_root="$(env_value MEDIA_LIBRARY_ROOT)"
   if [ -n "${media_library_root:-}" ]; then
     missing=""
     for sub in music videos movies shows; do
@@ -174,7 +181,6 @@ echo "Starting core services + homepage + PiTune + Jellyfin..."
 docker compose up -d
 
 # ── 7. Print the URL ─────────────────────────────────────────────────────
-env_value() { grep -E "^$1=" .env | tail -n1 | cut -d= -f2-; }
 port="$(env_value PIHUB_PORT)"; port="${port:-80}"
 navidrome_port="$(env_value NAVIDROME_PORT)"; navidrome_port="${navidrome_port:-4533}"
 jellyfin_port="$(env_value JELLYFIN_PORT)"; jellyfin_port="${jellyfin_port:-8096}"
