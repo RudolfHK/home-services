@@ -203,6 +203,14 @@ services:
     logging: *default-logging
 
     user: "${PUID}:${PGID}"
+    # Supplementary group, on top of PUID:PGID above, a no-op at the "0"
+    # default. Only matters if MEDIA_LIBRARY_ROOT (below) is set to a
+    # directory owned by some other uid/gid this container isn't already
+    # part of, e.g. a folder inside home-drive's Nextcloud data directory.
+    # See .env.example's MEDIA_GID comment and README.md's "Mounting a
+    # Nextcloud folder as your media library" section.
+    group_add:
+      - "${MEDIA_GID:-0}"
 
     # Published directly (not just reverse-proxied) so you can reach
     # Navidrome's own admin UI to create the account PiTune's Library tab
@@ -219,8 +227,11 @@ services:
       TZ: ${TZ}
 
     volumes:
+      # MEDIA_LIBRARY_ROOT, when set, redirects only this, never
+      # downloads/ below, which stays under MEDIA_ROOT always. See
+      # README.md's "Mounting a Nextcloud folder as your media library".
       - type: bind
-        source: ${MEDIA_ROOT}/music
+        source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/music
         target: /music
         read_only: true
         bind:
@@ -354,26 +365,40 @@ services:
     environment:
       TZ: ${TZ}
 
+    # The official image has no PUID/PGID handling and runs as root by
+    # default, unlike navidrome above. Root already reads anything its
+    # mounts reach regardless of Unix permissions, so this group_add is
+    # only a defensive no-op today (in case that ever changes, or you
+    # override `user:` yourself). Same MEDIA_GID as navidrome; see
+    # .env.example's comment and README.md's "Mounting a Nextcloud folder
+    # as your media library" section.
+    group_add:
+      - "${MEDIA_GID:-0}"
+
     volumes:
       - type: bind
         source: ${JELLYFIN_CONFIG_PATH}
         target: /config
         bind:
           create_host_path: false
+      # MEDIA_LIBRARY_ROOT, when set, redirects these three (and
+      # navidrome's music/ above), never downloads/, which stays under
+      # MEDIA_ROOT always. See README.md's "Mounting a Nextcloud folder
+      # as your media library".
       - type: bind
-        source: ${MEDIA_ROOT}/videos
+        source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/videos
         target: /media/videos
         read_only: true
         bind:
           create_host_path: false
       - type: bind
-        source: ${MEDIA_ROOT}/movies
+        source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/movies
         target: /media/movies
         read_only: true
         bind:
           create_host_path: false
       - type: bind
-        source: ${MEDIA_ROOT}/shows
+        source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/shows
         target: /media/shows
         read_only: true
         bind:

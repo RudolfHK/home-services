@@ -41,6 +41,14 @@ if [ ! -d "$media_root" ]; then
 fi
 
 # ── 3. Create the folder structure ──────────────────────────────────────
+# This wizard only ever sets up the plain-MEDIA_ROOT layout. If you want
+# music/videos/movies/shows to live inside home-drive's Nextcloud instead
+# (so Nextcloud itself manages adding/moving/deleting them), let this run
+# as-is first, then edit .env afterward and set MEDIA_LIBRARY_ROOT. See
+# README.md's "Mounting a Nextcloud folder as your media library". Create
+# those four subfolders through Nextcloud's own UI/sync client at that
+# point, not by hand here, so Nextcloud's index knows about them from the
+# start.
 echo "Creating folder structure under $media_root ..."
 mkdir -p \
   "$media_root"/music \

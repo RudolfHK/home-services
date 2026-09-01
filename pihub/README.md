@@ -221,6 +221,8 @@ pihub start tailscale     # optional — see Remote access via Tailscale
 | `PIHUB_PORT` | `80` | The one port for daily use. |
 | `NAVIDROME_PORT` / `JELLYFIN_PORT` | `4533` / `8096` | Published directly too: Navidrome for its one-time admin/account setup, Jellyfin for its setup wizard and for troubleshooting hardware transcoding without the proxy in the way. |
 | `PUID` / `PGID` | `1000`/`1000` | uid/gid Navidrome runs as, so it can read `MEDIA_ROOT`. |
+| `MEDIA_LIBRARY_ROOT` | unset (falls back to `MEDIA_ROOT`) | Redirects only `music/videos/movies/shows` to a different parent directory, e.g. a folder inside home-drive's Nextcloud. See [Mounting a Nextcloud folder as your media library](#mounting-a-nextcloud-folder-as-your-media-library-optional) below. |
+| `MEDIA_GID` | `0` (no-op) | Extra group Navidrome/Jellyfin are also given read access through. Only needed alongside `MEDIA_LIBRARY_ROOT` above, when it points at a directory owned by a different uid/gid than `PUID`/`PGID`. |
 | `DOWNLOAD_ENABLED` | `false` | Enables PiTune's "save this YouTube track" button, writing MP3s into `MEDIA_ROOT/downloads/`. |
 | `YTDLP_COOKIES_HOST_FILE` | unset | Path to a Netscape-format `cookies.txt`, for age-restricted/region-locked videos. |
 
@@ -236,6 +238,92 @@ ${MEDIA_ROOT}/
 ├── photos/      → reserved for a future Immich, nothing mounts it yet
 └── backups/     → scripts/backup.sh's default destination
 ```
+
+If `MEDIA_LIBRARY_ROOT` is set, only `music/videos/movies/shows` move there;
+`downloads/photos/backups` always stay under `MEDIA_ROOT` regardless. See
+below for why.
+
+## Mounting a Nextcloud folder as your media library (optional)
+
+If this repo's `home-drive` stack is already running on the **same Pi**
+with its optional Nextcloud drive installed (this only works as a
+same-machine bind mount, not over the network), you can point PiHub's
+`music/videos/movies/shows` straight at a folder inside it, so adding,
+moving, or deleting files through Nextcloud's own web UI, sync clients, or
+phone app is what actually manages your library, instead of keeping a
+separate folder in sync by hand.
+
+Nextcloud stores every user's files on the host at
+`${DATA_PATH}/nextcloud/data/<nextcloud-username>/files/...`, where
+`DATA_PATH` is set in **home-drive's own** `.env` (not PiHub's). So if
+home-drive's `DATA_PATH=/mnt/data` and your Nextcloud username is `admin`,
+a `Media` folder created in the Nextcloud web UI lives on disk at
+`/mnt/data/nextcloud/data/admin/files/Media`, and PiHub expects
+`music/`, `videos/`, `movies/`, and `shows/` subfolders (those exact
+lowercase names) underneath it.
+
+**Why you can't just point `MEDIA_LIBRARY_ROOT` there and go.**
+home-drive's own `scripts/install-drive.sh` deliberately `chown`s the
+whole `${DATA_PATH}/nextcloud/data` tree to Nextcloud's own internal user
+(commonly uid/gid 33, detected per-image, not hardcoded) and sets it to
+mode `750`, specifically so nothing outside the Nextcloud container can
+read it by default. Navidrome runs as `PUID:PGID` (1000:1000 by default),
+which is neither that user nor in its group, so a plain bind mount there
+fails with a permission error.
+
+**The fix**, without touching home-drive's own ownership or loosening its
+permissions:
+
+1. In Nextcloud's own web UI (or a sync client), create a `Media` folder
+   under your user, then `music`, `videos`, `movies`, and `shows`
+   subfolders inside it, and put the matching files in each. Creating
+   them through Nextcloud itself, rather than `mkdir` on the host, means
+   Nextcloud's own index already knows about them; see home-drive's
+   [docs/DRIVE.md](../home-drive/docs/DRIVE.md) for what goes wrong if
+   you add files from outside instead.
+2. Find the group that owns the Nextcloud data directory:
+   ```bash
+   stat -c '%g' /mnt/data/nextcloud/data     # replace with home-drive's actual DATA_PATH
+   ```
+3. In PiHub's `.env`, set `MEDIA_GID` to that number, and
+   `MEDIA_LIBRARY_ROOT` to the `Media` folder itself, not its subfolders
+   (the compose file appends `music`/`videos`/`movies`/`shows` on its
+   own):
+   ```bash
+   MEDIA_GID=33
+   MEDIA_LIBRARY_ROOT=/mnt/data/nextcloud/data/admin/files/Media
+   ```
+   `MEDIA_GID` adds that group as a *supplementary* group on the
+   `navidrome` and `jellyfin` containers (`group_add` in
+   `docker-compose.yml`), on top of their normal user. It doesn't change
+   who owns anything on disk, and it only grants read access, matching
+   the `750` permission's own group bits (`r-x`, no write): neither
+   container can write into your Nextcloud files even if something else
+   asked them to.
+4. Recreate the affected containers so the new mounts and group take
+   effect:
+   ```bash
+   pihub restart pitune
+   pihub restart jellyfin
+   ```
+
+**`downloads/`, `photos/`, and `backups/` are never redirected by
+`MEDIA_LIBRARY_ROOT`, and that's deliberate.** `pitune-backend` (the
+writer behind `/api/save`) has no `user:` override and runs as root,
+which ignores Unix permissions on anything its mounts can reach. If
+`downloads/` also lived inside Nextcloud's data directory, an enabled
+`DOWNLOAD_ENABLED` would let it write files there that Nextcloud's own
+database has no idea exist, risking the exact corruption home-drive's own
+`docs/DRIVE.md` warns about under "The one rule: nothing else writes into
+the drive." Keeping `downloads/` (and `photos/`, `backups/`) on a plain,
+non-Nextcloud path avoids that regardless of `DOWNLOAD_ENABLED`.
+
+New files added through Nextcloud show up in PiTune/Jellyfin once their
+own scans pick them up: Navidrome within `ND_SCANSCHEDULE` (every hour by
+default) or a manual rescan from its admin UI; Jellyfin on its own library
+scan schedule (**Dashboard → Libraries → Scan All Libraries** to force
+one). Nothing Nextcloud-side needs to know either is reading from here,
+since both only ever read.
 
 ## Raspberry Pi considerations
 
