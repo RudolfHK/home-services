@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 
 import docker_monitor
 import health_checker
+import monitor
 import system_stats
 
 logger = logging.getLogger("homepage")
@@ -328,6 +329,29 @@ async def service_logs(service_id: str, lines: int = Query(200, ge=1, le=2000), 
 @app.get("/api/system/stats")
 async def stats():
     return await system_stats.get_stats()
+
+
+@app.get("/api/monitor/drive")
+async def monitor_drive():
+    """PiMonitor's default tier: mounted media drive usage. No token
+    required, same as /api/system/stats — this is capacity information,
+    not activity or content."""
+    return monitor.get_drive_health()
+
+
+@app.get("/api/monitor/file-activity", dependencies=[Depends(require_token)])
+async def monitor_file_activity(rescan: bool = Query(False)):
+    """PiMonitor's advanced tier. Cached (see monitor.py); pass
+    ?rescan=true to force a fresh walk instead of the cached one."""
+    return await monitor.get_file_activity(force_rescan=rescan)
+
+
+@app.get("/api/monitor/user-activity", dependencies=[Depends(require_token)])
+async def monitor_user_activity():
+    """PiMonitor's advanced tier. Reports "not configured" per-service
+    rather than erroring when JELLYFIN_API_KEY / NAVIDROME_MONITOR_USER
+    aren't set — see monitor.py's module docstring."""
+    return await monitor.get_user_activity()
 
 
 @app.get("/api/system/updates")

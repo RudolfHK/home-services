@@ -147,6 +147,29 @@ their first visit; see `frontend/src/app.js`), poll intervals, and the
 warning thresholds shown in the health panel (deliberately the same numbers
 `home-drive`'s own monitoring uses, not a second copy that could drift).
 
+### PiMonitor
+
+The "PiMonitor" button in the sidebar opens a modal with two tiers, backed
+by `backend/monitor.py`:
+
+- **Default** (loads automatically, no token needed): mounted media drive
+  usage. Cheap, so it's fine to load every time the modal opens.
+- **Advanced** (explicit buttons, needs `API_TOKEN`): file activity (a
+  snapshot of the library, by folder, plus the most recently changed
+  files, time- and count-boxed and cached for `MONITOR_SCAN_CACHE_SECONDS`
+  so it isn't a full walk on every click) and user activity (who's
+  currently playing what, via Jellyfin's `/Sessions` and Navidrome's
+  `getNowPlaying.view`). Neither Jellyfin nor Navidrome credentials are
+  required for the rest of this stack to work; leaving `JELLYFIN_API_KEY`
+  or `NAVIDROME_MONITOR_USER`/`NAVIDROME_MONITOR_PASSWORD` unset just
+  reports that half as "not configured" instead of failing.
+
+`LIBRARY_PATH` (the file-activity scan target) tracks `MEDIA_LIBRARY_ROOT`
+when set, unlike `MEDIA_PATH` (used for drive-capacity stats), which is
+always the physical `MEDIA_ROOT` mount; see `../README.md`'s "Mounting a
+Nextcloud folder as your media library" for why a redirected library and
+the physical drive it doesn't live on aren't the same thing.
+
 ## API reference
 
 | Endpoint | What it does |
@@ -157,6 +180,9 @@ warning thresholds shown in the health panel (deliberately the same numbers
 | `GET /api/services/{id}/logs?lines=200` | Last N lines from one container |
 | `GET /api/system/stats` | CPU%, temp, RAM, disk (media + boot), Pi uptime |
 | `GET /api/system/updates` | On-demand: yt-dlp version + Docker image freshness, cached 1h |
+| `GET /api/monitor/drive` | PiMonitor default tier: mounted media drive usage |
+| `GET /api/monitor/file-activity?rescan=false` | PiMonitor advanced tier: library snapshot + recently changed files (needs `API_TOKEN`) |
+| `GET /api/monitor/user-activity` | PiMonitor advanced tier: current Jellyfin/Navidrome playback (needs `API_TOKEN`) |
 | `GET /api/config/settings` | Serves `settings.yml` to the frontend |
 
 ## Security model
@@ -221,7 +247,8 @@ homepage/
 │   ├── main.py                # FastAPI app, routes, config loading
 │   ├── docker_monitor.py      # container status/start/stop/restart/logs/image-check
 │   ├── health_checker.py      # HTTP checks + in-memory failure/response-time history
-│   └── system_stats.py        # CPU/RAM/disk/temp/uptime + yt-dlp version check
+│   ├── system_stats.py        # CPU/RAM/disk/temp/uptime + yt-dlp version check
+│   └── monitor.py             # PiMonitor: drive health, file activity, user activity
 └── frontend/
     └── src/
         ├── index.html
@@ -230,6 +257,7 @@ homepage/
         │   ├── ServiceCard.js
         │   ├── SystemStats.js
         │   ├── HealthPanel.js
-        │   └── LogViewer.js
+        │   ├── LogViewer.js
+        │   └── MonitorPanel.js
         └── styles/main.css
 ```

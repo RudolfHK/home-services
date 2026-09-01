@@ -90,6 +90,16 @@ services:
       # so docker_monitor.py needed no code change for this. See
       # docker-proxy's own comment above for what it does and doesn't allow.
       DOCKER_HOST: tcp://docker-proxy:2375
+      # PiMonitor (see homepage/backend/monitor.py). LIBRARY_PATH is the
+      # actual active library root (honors MEDIA_LIBRARY_ROOT), separate
+      # from MEDIA_PATH above which is always the physical MEDIA_ROOT
+      # mount, used for drive-capacity stats specifically.
+      LIBRARY_PATH: /library
+      JELLYFIN_URL: http://jellyfin:8096
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:-}
+      NAVIDROME_URL: http://navidrome:4533
+      NAVIDROME_MONITOR_USER: ${NAVIDROME_MONITOR_USER:-}
+      NAVIDROME_MONITOR_PASSWORD: ${NAVIDROME_MONITOR_PASSWORD:-}
 
     depends_on:
       - docker-proxy
@@ -107,6 +117,16 @@ services:
       - type: bind
         source: ${MEDIA_ROOT}
         target: /media
+        read_only: true
+        bind:
+          create_host_path: false
+      # PiMonitor's file-activity scan reads this; not the same path as
+      # /media above when MEDIA_LIBRARY_ROOT redirects the library
+      # elsewhere (e.g. into home-drive's Nextcloud). Read-only, and a walk
+      # + stat() never reads file contents, same reasoning as /hostroot.
+      - type: bind
+        source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}
+        target: /library
         read_only: true
         bind:
           create_host_path: false

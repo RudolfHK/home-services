@@ -2,6 +2,7 @@ import { buildServiceCard } from "./components/ServiceCard.js";
 import { renderSystemStats, systemAlerts } from "./components/SystemStats.js";
 import { renderAlerts, renderUpdates } from "./components/HealthPanel.js";
 import { openLogViewer } from "./components/LogViewer.js";
+import { wireMonitorPanel } from "./components/MonitorPanel.js";
 
 // The backend deliberately has no "fetch the current token" endpoint —
 // CORS only stops a cross-origin webpage's JS from reading a response, not
@@ -153,6 +154,9 @@ document.getElementById("check-updates").addEventListener("click", async (e) => 
     btn.textContent = "Check for updates";
   }
 });
+
+// ── PiMonitor ───────────────────────────────────────────────────────
+wireMonitorPanel(fetchJSON);
 
 // ── Init ──────────────────────────────────────────────────────────────
 async function init() {
