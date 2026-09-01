@@ -149,6 +149,34 @@ if grep -q "UUID=$UUID" /etc/fstab; then
   info "UUID $UUID already present in /etc/fstab — leaving it alone."
   info "Existing entry: $(grep "UUID=$UUID" /etc/fstab)"
 else
+  # A stale entry for this exact mountpoint, from a DIFFERENT UUID, is not
+  # harmless leftovers — it is invalid the moment a second one exists, since
+  # only one device can ever back one mountpoint. This is exactly what
+  # reformatting the same drive a second time produces: mkfs assigns a fresh
+  # UUID every run, so an entry from an earlier format of this very drive
+  # becomes unreachable rather than simply redundant. Catch it now, rather
+  # than adding a second line alongside it and finding out from `findmnt
+  # --verify` a few lines down.
+  STALE_LINE="$(awk -v mp="$MOUNT_POINT" '$2 == mp' /etc/fstab || true)"
+  if [[ -n "$STALE_LINE" ]]; then
+    warn "/etc/fstab already has an entry for $MOUNT_POINT, for a different device:"
+    warn "  $STALE_LINE"
+    warn "Only one device can back a given mountpoint. If this drive has been"
+    warn "formatted before, that old UUID no longer exists — mkfs assigns a new"
+    warn "one every time, even to the same disk — so the line above is stale,"
+    warn "not a second valid drive."
+    read -rp "Remove that entry before adding the new one? [y/N] " REMOVE_STALE
+    if [[ "$REMOVE_STALE" =~ ^[Yy]$ ]]; then
+      STALE_BAK="/etc/fstab.bak.$(date +%Y%m%d%H%M%S)"
+      cp /etc/fstab "$STALE_BAK"
+      awk -v mp="$MOUNT_POINT" '$2 != mp' /etc/fstab > /etc/fstab.new
+      mv /etc/fstab.new /etc/fstab
+      info "Removed. Previous file backed up to $STALE_BAK."
+    else
+      error "Leaving it. Remove the stale $MOUNT_POINT entry from /etc/fstab yourself, then re-run."
+    fi
+  fi
+
   FSTAB_BAK="/etc/fstab.bak.$(date +%Y%m%d%H%M%S)"
   info "Backing up /etc/fstab to $FSTAB_BAK…"
   cp /etc/fstab "$FSTAB_BAK"
