@@ -7,10 +7,10 @@ and start/stop/restart/logs controls, all driven by one YAML file, so
 adding a future service never means touching code.
 
 Replaces PiHub's earlier `dashboard/` + `management-api/` pair with one
-config-driven service. If you're looking for `home-drive`'s own
-`healthcheck.sh`/`health-dashboard.sh`, that's a separate, independent
-project with its own monitoring (Tailscale, FileBrowser, CouchDB,
-Nextcloud); this dashboard doesn't touch it, on purpose. See
+config-driven service. `home-drive` (Nextcloud) is a separate, independent
+project; this dashboard doesn't monitor it, on purpose, PiMonitor's file
+activity aside, which only ever reads the media library's files, never
+anything about home-drive's own containers, database, or config. See
 [Why this design](#why-this-design).
 
 ## Architecture
@@ -67,13 +67,17 @@ under `/` to it; see `../nginx/nginx.conf`.
   Both are cached for an hour and only run when you click **Check for
   updates**. Polling either one every 10-15 seconds would just get you
   rate-limited for no benefit.
-- **`home-drive` is left alone, deliberately.** It's a separate product
-  monitoring a separate stack (Tailscale, FileBrowser, CouchDB, Nextcloud)
-  that may not even run on the same Pi as PiHub. Folding its checks in
-  here would mean this dashboard's backend needs to know about CouchDB and
-  Nextcloud, which has nothing to do with PiTune or Jellyfin. If you *do*
-  run both on one Pi, home-drive's own `health-dashboard.sh` is still the
-  right tool for its own stack; this one doesn't replace it.
+- **`home-drive`'s own containers, database, and config are left alone,
+  deliberately.** It's a separate product (Nextcloud) that may not even
+  run on the same Pi as PiHub. Folding its container/service health in
+  here would mean this dashboard's backend needs to know about Nextcloud,
+  which has nothing to do with PiTune or Jellyfin. PiMonitor's file
+  activity is the one deliberate exception, and only in the narrow sense
+  that it can read whatever's on disk under `MEDIA_LIBRARY_ROOT`, which may
+  physically be a folder inside home-drive's Nextcloud data directory (see
+  `../README.md`'s "Mounting a Nextcloud folder as your media library").
+  That's a read of files, not a check of home-drive's health; home-drive
+  is still a fully independent stack from PiHub's point of view.
 
 ## Quick start (as part of PiHub)
 
