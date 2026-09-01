@@ -414,18 +414,29 @@ services:
         target: /config
         bind:
           create_host_path: false
-      # MEDIA_LIBRARY_ROOT, when set, redirects these four (and
-      # navidrome's music/ above), never downloads/ or backups/, which stay
-      # under MEDIA_ROOT always. See README.md's "Mounting a Nextcloud
-      # folder as your media library".
+      # MEDIA_LIBRARY_ROOT, when set, redirects these three (and
+      # navidrome's music/ above), never downloads/, backups/, or movies/
+      # below, which stay under MEDIA_ROOT always. See README.md's
+      # "Mounting a Nextcloud folder as your media library".
       - type: bind
         source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/videos
         target: /media/videos
         read_only: true
         bind:
           create_host_path: false
+      # Always MEDIA_ROOT, deliberately never MEDIA_LIBRARY_ROOT: individual
+      # movie files routinely exceed 50GB, which is a real problem for
+      # Nextcloud specifically (its chunked-upload size ceiling, wasted
+      # preview-generation attempts on huge video files, a much slower
+      # occ files:scan/backup pass once files that size are in its index,
+      # and sync clients/mobile apps that are impractical at that size). If
+      # you want movies inside Nextcloud anyway, edit this line yourself;
+      # the default here is "manage this folder directly on the drive
+      # instead" (copy/move/delete files onto MEDIA_ROOT/movies by hand,
+      # over a network share, USB, or SFTP), not something Nextcloud's own
+      # UI or sync clients ever touch.
       - type: bind
-        source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/movies
+        source: ${MEDIA_ROOT}/movies
         target: /media/movies
         read_only: true
         bind:

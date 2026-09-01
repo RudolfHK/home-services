@@ -78,13 +78,18 @@ fi
 
 # ── 3. Create the folder structure ──────────────────────────────────────
 # This wizard only ever sets up the plain-MEDIA_ROOT layout. If you want
-# music/videos/movies/shows/photos to live inside home-drive's Nextcloud
-# instead (so Nextcloud itself manages adding/moving/deleting them), let
-# this run as-is first, then edit .env afterward and set MEDIA_LIBRARY_ROOT.
-# See README.md's "Mounting a Nextcloud folder as your media library".
-# Create those five subfolders through Nextcloud's own UI/sync client at
-# that point, not by hand here, so Nextcloud's index knows about them from
-# the start.
+# music/videos/shows/photos to live inside home-drive's Nextcloud instead
+# (so Nextcloud itself manages adding/moving/deleting them), let this run
+# as-is first, then edit .env afterward and set MEDIA_LIBRARY_ROOT. See
+# README.md's "Mounting a Nextcloud folder as your media library". Create
+# those four subfolders through Nextcloud's own UI/sync client at that
+# point, not by hand here, so Nextcloud's index knows about them from the
+# start. movies/ is deliberately NOT part of this: individual movie files
+# routinely exceed 50GB, which is a real problem specific to Nextcloud
+# (chunked-upload limits, wasted preview-generation attempts, a much
+# slower files:scan/backup once files that size are in its index). Manage
+# movies/ directly on the drive instead; it always stays under MEDIA_ROOT,
+# same as downloads/ and backups/.
 echo "Creating folder structure under $media_root ..."
 mkdir -p \
   "$media_root"/music \
@@ -98,14 +103,15 @@ mkdir -p \
 mkdir -p ./navidrome/data ./jellyfin/config
 
 # If .env redirects the streamable library elsewhere, jellyfin's and
-# navidrome's binds point there instead — and those five folders are
+# navidrome's binds point there instead — and those four folders are
 # Nextcloud's to create, not ours (creating them behind its back leaves them
-# outside its index). Check and stop, rather than mkdir.
+# outside its index). Check and stop, rather than mkdir. movies/ is
+# excluded here on purpose (see above); it never moves with the others.
 if [ -f .env ]; then
   media_library_root="$(env_value MEDIA_LIBRARY_ROOT)"
   if [ -n "${media_library_root:-}" ]; then
     missing=""
-    for sub in music videos movies shows photos; do
+    for sub in music videos shows photos; do
       [ -d "$media_library_root/$sub" ] || missing="$missing $sub"
     done
     if [ -n "$missing" ]; then
@@ -115,7 +121,7 @@ if [ -f .env ]; then
       echo "       Nextcloud folder as your media library\"." >&2
       exit 1
     fi
-    # Unlike the five folders above, this one is PiHub's own: nothing the
+    # Unlike the four folders above, this one is PiHub's own: nothing the
     # user adds content to directly through Nextcloud, so creating it here
     # doesn't skip a step Nextcloud was supposed to own. Files pitune-backend
     # later saves into it still need Nextcloud told about them afterward

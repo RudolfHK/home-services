@@ -223,7 +223,7 @@ pihub start tailscale     # optional — see Remote access via Tailscale
 | `PIHUB_PORT` | `80` | The one port for daily use. |
 | `NAVIDROME_PORT` / `JELLYFIN_PORT` | `4533` / `8096` | Published directly too: Navidrome for its one-time admin/account setup, Jellyfin for its setup wizard and for troubleshooting hardware transcoding without the proxy in the way. |
 | `PUID` / `PGID` | `1000`/`1000` | uid/gid Navidrome runs as, so it can read `MEDIA_ROOT`. |
-| `MEDIA_LIBRARY_ROOT` | unset (falls back to `MEDIA_ROOT`) | Redirects only `music/videos/movies/shows/photos` to a different parent directory, e.g. a folder inside home-drive's Nextcloud. See [Mounting a Nextcloud folder as your media library](#mounting-a-nextcloud-folder-as-your-media-library-optional) below. |
+| `MEDIA_LIBRARY_ROOT` | unset (falls back to `MEDIA_ROOT`) | Redirects only `music/videos/shows/photos` (never `movies/`, which routinely exceeds 50GB per file and always stays under `MEDIA_ROOT`) to a different parent directory, e.g. a folder inside home-drive's Nextcloud. See [Mounting a Nextcloud folder as your media library](#mounting-a-nextcloud-folder-as-your-media-library-optional) below. |
 | `MEDIA_GID` | `0` (no-op) | Extra group Navidrome/Jellyfin are also given read access through. Only needed alongside `MEDIA_LIBRARY_ROOT` above, when it points at a directory owned by a different uid/gid than `PUID`/`PGID`. |
 | `DOWNLOAD_ENABLED` | `true` | Once a YouTube track finishes playing, PiTune automatically saves it into `music/YouTube/`, inside the actual library. Set to `false` to turn this off. |
 | `YTDLP_COOKIES_HOST_FILE` | unset | Path to a Netscape-format `cookies.txt`, for age-restricted/region-locked videos. |
@@ -235,25 +235,26 @@ ${MEDIA_ROOT}/
 ├── music/           → Navidrome (read-only)
 │   └── YouTube/     → PiTune's auto-saved tracks (read-write for pitune-backend only)
 ├── videos/          → Jellyfin, general library (read-only)
-├── movies/          → Jellyfin, movies library (read-only)
+├── movies/          → Jellyfin, movies library (read-only); always stays here, see below
 ├── shows/           → Jellyfin, TV library (read-only)
 ├── photos/          → Jellyfin, Photos library (read-only)
 ├── downloads/       → unused by default, free for your own manual use
 └── backups/         → scripts/backup.sh's default destination
 ```
 
-If `MEDIA_LIBRARY_ROOT` is set, `music/videos/movies/shows/photos` move
-there; `downloads/backups` always stay under `MEDIA_ROOT` regardless. See
-below for why.
+If `MEDIA_LIBRARY_ROOT` is set, `music/videos/shows/photos` move there;
+`downloads/backups/movies` always stay under `MEDIA_ROOT` regardless. See
+below for why `movies/` in particular is deliberately excluded.
 
 ## Mounting a Nextcloud folder as your media library (optional)
 
 If this repo's `home-drive` stack is already running on the **same Pi**
 (this only works as a same-machine bind mount, not over the network), you
-can point PiHub's `music/videos/movies/shows/photos` straight at a folder
-inside its Nextcloud data directory, so adding, moving, or deleting files
-through Nextcloud's own web UI, sync clients, or phone app is what actually
-manages your library, instead of keeping a separate folder in sync by hand.
+can point PiHub's `music/videos/shows/photos` straight at a folder inside
+its Nextcloud data directory, so adding, moving, or deleting files through
+Nextcloud's own web UI, sync clients, or phone app is what actually manages
+your library, instead of keeping a separate folder in sync by hand.
+`movies/` is not part of this; see "Why `movies/` never moves" below.
 This is also how a saved YouTube track (see `music/YouTube/` above) ends up
 editable from any device running the Nextcloud client, not just from the Pi.
 
@@ -263,8 +264,10 @@ Nextcloud stores every user's files on the host at
 home-drive's `DATA_PATH=/mnt/data` and your Nextcloud username is `admin`,
 a `media` folder created in the Nextcloud web UI lives on disk at
 `/mnt/data/nextcloud/data/admin/files/media`, and PiHub expects `music/`,
-`videos/`, `movies/`, `shows/`, and `photos/` subfolders (those exact
-lowercase names) underneath it.
+`videos/`, `shows/`, and `photos/` subfolders (those exact lowercase
+names) underneath it. Don't create a `movies/` subfolder here; it doesn't
+belong inside Nextcloud at all (see below) and PiHub never looks for one
+in this location.
 
 **Why you can't just point `MEDIA_LIBRARY_ROOT` there and go.**
 home-drive's own `scripts/install.sh` deliberately `chown`s the whole
@@ -279,11 +282,12 @@ fails with a permission error.
 permissions:
 
 1. In Nextcloud's own web UI (or a sync client), create a `media` folder
-   under your user, then `music`, `videos`, `movies`, `shows`, and
-   `photos` subfolders inside it, and put the matching files in each.
-   Creating them through Nextcloud itself, rather than `mkdir` on the
-   host, means Nextcloud's own index already knows about them from the
-   start; see home-drive's [README.md](../home-drive/README.md#the-one-rule-nothing-else-writes-into-the-drive-without-telling-nextcloud)
+   under your user, then `music`, `videos`, `shows`, and `photos`
+   subfolders inside it (not `movies/`; see "Why `movies/` never moves"
+   below), and put the matching files in each. Creating them through
+   Nextcloud itself, rather than `mkdir` on the host, means Nextcloud's
+   own index already knows about them from the start; see home-drive's
+   [README.md](../home-drive/README.md#the-one-rule-nothing-else-writes-into-the-drive-without-telling-nextcloud)
    for what goes wrong if you add files from outside instead, and how to
    recover when something (PiTune's own auto-save included) has to.
 2. Find the group that owns the Nextcloud data directory:
@@ -292,8 +296,8 @@ permissions:
    ```
 3. In PiHub's `.env`, set `MEDIA_GID` to that number, and
    `MEDIA_LIBRARY_ROOT` to the `media` folder itself, not its subfolders
-   (the compose file appends `music`/`videos`/`movies`/`shows`/`photos`
-   on its own):
+   (the compose file appends `music`/`videos`/`shows`/`photos` on its
+   own; `movies` is never appended from this variable, see below):
    ```bash
    MEDIA_GID=33
    MEDIA_LIBRARY_ROOT=/mnt/data/nextcloud/data/admin/files/media
@@ -314,6 +318,23 @@ permissions:
    pihub restart pitune
    pihub restart jellyfin
    ```
+
+**Why `movies/` never moves.** Unlike `music/videos/shows/photos`,
+`movies/` is not one of the folders `MEDIA_LIBRARY_ROOT` can redirect at
+all; `docker-compose.yml`'s jellyfin service pins its `movies` mount to
+`MEDIA_ROOT` directly, with no `MEDIA_LIBRARY_ROOT` fallback in that one
+line. Individual movie files routinely exceed 50GB, and that's a real
+problem specific to Nextcloud: its chunked-upload size ceiling, wasted
+preview-generation attempts on huge video files, a `files:scan`/backup
+pass that gets noticeably slower once files that size are in Nextcloud's
+index, and sync clients/mobile apps that are impractical at that size in
+the first place. `movies/` always stays under `MEDIA_ROOT` and is meant to
+be managed directly on the drive, copy/move/delete by hand over a network
+share, USB, or SFTP, never through Nextcloud's web UI or sync clients. If
+you've decided that trade-off doesn't apply to you (a fast LAN, a Nextcloud
+instance you don't mind being slower, files reliably under whatever your
+own comfort threshold is), edit that one line in `docker-compose.yml`
+yourself; this isn't enforced anywhere beyond that default.
 
 **`downloads/` and `backups/` are never redirected by `MEDIA_LIBRARY_ROOT`,
 and that's deliberate; `music/YouTube/` is different.** `pitune-backend`

@@ -115,8 +115,13 @@ running it day to day.
 Still signed in to Nextcloud's web UI as `NEXTCLOUD_ADMIN_USER`:
 
 1. Create a folder named **`media`**.
-2. Inside it, create five subfolders, named exactly (lowercase):
-   **`music`**, **`videos`**, **`movies`**, **`shows`**, **`photos`**.
+2. Inside it, create four subfolders, named exactly (lowercase):
+   **`music`**, **`videos`**, **`shows`**, **`photos`**. **Not `movies`**:
+   individual movie files routinely exceed 50GB, which causes real
+   problems specific to Nextcloud (chunked-upload size limits, wasted
+   preview-generation attempts, a much slower `files:scan`/backup pass).
+   Movies get their own plain folder on the drive in step 3 instead,
+   managed directly (copy/move/delete by hand), never through Nextcloud.
 3. Upload or sync your existing library into the matching subfolders (a
    desktop sync client is the easiest way to move a large existing
    collection in; see [`home-drive/README.md`](home-drive/README.md#clients)).
@@ -129,7 +134,6 @@ disk (confirm this matches what PiHub will read in step 3), this is:
 /mnt/data/nextcloud/data/<NEXTCLOUD_ADMIN_USER>/files/media/
 ├── music/
 ├── videos/
-├── movies/
 ├── shows/
 └── photos/
 ```
@@ -155,11 +159,14 @@ bash scripts/setup.sh
 
 When it asks for a **media storage path**, give it a plain folder that is
 **not** inside Nextcloud, e.g. `/mnt/data/pihub`, creating it first if it
-doesn't exist (`sudo mkdir -p /mnt/data/pihub`). This becomes `MEDIA_ROOT`,
-used only for `downloads/` and `backups/` once step 3b below redirects the
-actual library elsewhere; the setup wizard's own
-`music/videos/movies/shows/photos` subfolders under it end up unused,
-which is harmless.
+doesn't exist (`sudo mkdir -p /mnt/data/pihub`). This becomes `MEDIA_ROOT`.
+Once step 3b below redirects `music/videos/shows/photos` elsewhere, the
+setup wizard's own subfolders of those four names under it end up unused,
+which is harmless; `downloads/`, `backups/`, and, deliberately, `movies/`
+keep using this path regardless (see step 3b for why movies stays out of
+Nextcloud). Put your movie files straight into `MEDIA_ROOT/movies/` by
+hand, copy/move/delete directly on the drive whenever your collection
+changes.
 
 Let `setup.sh` finish (it pulls images and starts core + homepage + PiTune
 + Jellyfin), then stop the two containers whose media mounts the next step
@@ -195,9 +202,10 @@ Navidrome and Jellyfin read access through a supplementary group, without
 touching that directory's ownership or loosening its permissions, and
 without ever granting write access. See
 [`pihub/README.md`](pihub/README.md#mounting-a-nextcloud-folder-as-your-media-library-optional)
-for the full reasoning, including why `downloads/` and `backups/`
-deliberately stay out of Nextcloud's tree regardless, and how
-`music/YouTube/` differs from both.
+for the full reasoning, including why `downloads/`, `backups/`, and
+`movies/` (individual files routinely exceed 50GB, a real problem
+specific to Nextcloud) deliberately stay out of Nextcloud's tree
+regardless, and how `music/YouTube/` differs from the rest.
 
 Now bring everything back up:
 
