@@ -241,6 +241,29 @@ hour by default), or immediately via a manual rescan from Navidrome's own
 admin UI. Nothing Nextcloud-side needs to know PiTune is reading from
 here, since Navidrome only ever reads.
 
+**A file Nextcloud is still mid-upload or mid-sync when a scan happens to
+run gets picked up as whatever bytes are on disk at that instant**, since
+Navidrome reads the raw file directly and has no way to know Nextcloud's
+own upload for it isn't finished yet. Worst case is one truncated-looking
+track until the next scan, after the write completes; nothing gets stuck
+or corrupted permanently. This is the same "eventually consistent"
+behavior any newly-added file already has before its first scan, just
+with a possible extra cycle if the timing is unlucky.
+
+**Running this alongside PiHub on the same Pi** works with no direct
+coupling between the two: PiHub builds and runs its own separate copies of
+Navidrome/backend/frontend (`pihub/pitune/`, not this directory), so
+nothing here touches PiHub's containers, config, or dashboard. The one
+thing to watch is **default ports**, if you run both stacks at once:
+`PITUNE_PORT` here and PiHub's `JELLYFIN_PORT` both default to `8096`, and
+if PiHub's own `pitune` profile is *also* enabled, its `NAVIDROME_PORT`
+collides with this stack's at `4533` too. Docker will simply refuse to
+start whichever container comes up second with "port is already
+allocated." Change one side's port in the relevant `.env` (or leave
+PiHub's `pitune` profile disabled and use only this standalone stack for
+PiTune, which is the simpler combination if you want PiHub mainly for
+Jellyfin and the dashboard) before running both together.
+
 ## Ports
 
 | Container | Published as | Notes |
