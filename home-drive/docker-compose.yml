@@ -44,7 +44,7 @@ services:
   #   nextcloud-cron   background jobs (no listener)
   #
   # Nothing here uses `network_mode: service:tailscale` — this stack reaches
-  # the LAN directly like pitune/pihub, with Tailscale as an optional sidecar
+  # the LAN directly like PiHub, with Tailscale as an optional sidecar
   # further down. `nextcloud-db`/`nextcloud-redis`/`nextcloud-app` publish no
   # host port at all, so they're reachable only from other containers on
   # `homedrive_net`, never from the LAN or the tailnet.
@@ -213,7 +213,7 @@ services:
       nextcloud-app:
         condition: service_healthy
 
-    # The one LAN-facing port for this stack, matching pitune/pihub's
+    # The one LAN-facing port for this stack, matching PiHub's
     # convention: reachable on your home network with no VPN client needed.
     # Plain HTTP, same accepted tradeoff as the rest of this repo ("personal
     # use on a home network only" — see README.md's Security model). The
@@ -289,7 +289,7 @@ services:
   # unaffected either way — this is an ADDITIONAL way in, not a replacement.
   #
   # Stays on the normal compose network and `tailscale serve` proxies to
-  # `nextcloud-web` by its Docker DNS name, the same pattern pitune/pihub
+  # `nextcloud-web` by its Docker DNS name, the same pattern PiHub
   # already use — see ../tailscale/README.md.
   #
   # Before enabling this: apply ../tailscale/acl-policy.hujson to your

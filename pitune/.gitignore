@@ -1,8 +1,0 @@
-# Never commit secrets or local state
-.env
-
-# Runtime / OS noise
-*.log
-.DS_Store
-__pycache__/
-*.pyc
