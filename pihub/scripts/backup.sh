@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 # shellcheck disable=SC1091
 [ -f .env ] && set -a && source .env && set +a
 
-MEDIA_ROOT="${MEDIA_ROOT:-/media/storage}"
+MEDIA_ROOT="${MEDIA_ROOT:-/mnt/data/pihub}"
 NAVIDROME_DATA_PATH="${NAVIDROME_DATA_PATH:-./navidrome/data}"
 JELLYFIN_CONFIG_PATH="${JELLYFIN_CONFIG_PATH:-./jellyfin/config}"
 BACKUP_DEST="${BACKUP_DEST:-$MEDIA_ROOT/backups}"
