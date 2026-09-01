@@ -31,6 +31,14 @@ services:
     # env handling — set the uid/gid explicitly so it can read MUSIC_PATH and
     # write ND_DATAFOLDER with the same ownership as the host user.
     user: "${PUID}:${PGID}"
+    # Supplementary group, on top of PUID:PGID above — a no-op at the "0"
+    # default. Only matters if MUSIC_PATH is owned by some other uid/gid
+    # this container isn't already part of, e.g. a folder inside
+    # home-drive's Nextcloud data directory (see .env.example's MUSIC_GID
+    # comment and README.md's "Mounting a Nextcloud folder as your music
+    # library" section).
+    group_add:
+      - "${MUSIC_GID:-0}"
 
     ports:
       - "${NAVIDROME_PORT:-4533}:4533"
@@ -101,6 +109,12 @@ services:
     volumes:
       # rw only matters for /api/save (gated by DOWNLOAD_ENABLED above); set
       # MUSIC_MOUNT_MODE=rw in .env only once you actually enable that feature.
+      # No MUSIC_GID/group_add here like navidrome has below: this container
+      # has no `user:` override, so it runs as root and can already read
+      # (and, if MUSIC_MOUNT_MODE=rw, write) anywhere its mounts reach
+      # regardless of Unix permissions. That's exactly why MUSIC_PATH
+      # pointing into home-drive's Nextcloud data directory must keep
+      # DOWNLOAD_ENABLED=false — see the comment in .env.example.
       - type: bind
         source: ${MUSIC_PATH}
         target: /music

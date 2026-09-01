@@ -165,11 +165,81 @@ Then:
 | `PITUNE_PORT` | `8096` | The one port you actually use day to day. |
 | `NAVIDROME_PORT` | `4533` | Navidrome's own admin UI / direct Subsonic access. |
 | `PUID` / `PGID` | `1000`/`1000` | uid/gid Navidrome runs as, so it can read `MUSIC_PATH`. Run `id -u` / `id -g`. |
+| `MUSIC_GID` | `0` (no-op) | Extra group Navidrome is also given read access through. Only needed if `MUSIC_PATH` is owned by a different uid/gid than `PUID`/`PGID`, e.g. a folder inside home-drive's Nextcloud data directory; see [Mounting a Nextcloud folder as your music library](#mounting-a-nextcloud-folder-as-your-music-library-optional) below. |
 | `NAVIDROME_TAG` | `latest` | Pin once the stack is validated; see the note in `.env.example`. |
 | `ND_SCANSCHEDULE` | `@every 1h` | How often Navidrome rescans `MUSIC_PATH`. |
 | `SEARCH_RESULT_LIMIT` | `20` | Max YouTube results per search. |
 | `YTDLP_COOKIES_HOST_FILE` | unset | Path to a Netscape-format `cookies.txt`, only needed for age-restricted/region-locked videos. |
 | `DOWNLOAD_ENABLED` + `MUSIC_MOUNT_MODE` | `false` / `true` (read-only) | Together enable "save this YouTube track to the library"; see below. Both must be flipped, since `DOWNLOAD_ENABLED` alone does nothing while the mount stays read-only. |
+
+## Mounting a Nextcloud folder as your music library (optional)
+
+If this repo's `home-drive` stack is already running on the **same Pi**
+(this only works as a same-machine bind mount, not over the network),
+you can point `MUSIC_PATH` straight at a folder inside home-drive's own
+Nextcloud, so uploading or syncing music through Nextcloud's own clients
+is what actually adds it to PiTune's library, instead of keeping a
+separate folder in sync by hand.
+
+Nextcloud stores every user's files on the host at
+`${DATA_PATH}/nextcloud/data/<nextcloud-username>/files/...`, where
+`DATA_PATH` is the value set in **home-drive's own** `.env` (not
+PiTune's). So if home-drive's `DATA_PATH=/mnt/data` and your Nextcloud
+username is `alice`, a `Music` folder she created in the Nextcloud web UI
+or synced there from her desktop lives on disk at
+`/mnt/data/nextcloud/data/alice/files/Music`.
+
+**Why you can't just point `MUSIC_PATH` there and go.** home-drive's own
+`scripts/install-drive.sh` deliberately `chown`s the whole
+`${DATA_PATH}/nextcloud/data` tree to Nextcloud's own internal user
+(commonly uid/gid 33, but it's detected per-image, not hardcoded) and
+sets it to mode `750`, specifically so nothing outside the Nextcloud
+container can read it by default. PiTune's `navidrome` container runs as
+`PUID:PGID` (1000:1000 by default), which is neither that user nor in its
+group, so a plain bind mount there fails with a permission error.
+
+**The fix**, without touching home-drive's own ownership or loosening its
+permissions:
+
+1. Find the group that owns the Nextcloud data directory:
+   ```bash
+   stat -c '%g' /mnt/data/nextcloud/data     # replace with home-drive's actual DATA_PATH
+   ```
+2. In PiTune's `.env`, set `MUSIC_GID` to that number, and `MUSIC_PATH` to
+   the specific folder inside it you want as your library:
+   ```bash
+   MUSIC_GID=33
+   MUSIC_PATH=/mnt/data/nextcloud/data/alice/files/Music
+   ```
+   `MUSIC_GID` adds that group as a *supplementary* group on the
+   `navidrome` container (`group_add` in `docker-compose.yml`) on top of
+   its normal `PUID:PGID`. It doesn't change who owns anything on disk,
+   and it only grants read access, matching the `750` permission's own
+   group bits (`r-x`, no write), so Navidrome still can't write into your
+   Nextcloud files even if something else asked it to.
+3. Recreate the container so the new mount and group take effect:
+   ```bash
+   docker compose up -d navidrome
+   ```
+
+**Leave `DOWNLOAD_ENABLED` and `MUSIC_MOUNT_MODE` at their defaults
+(`false` / `true`) when doing this.** Unlike `navidrome`, the `backend`
+container has no `user:` override and runs as root, which ignores Unix
+permissions entirely on anything its own mounts can reach. If you also
+flip `MUSIC_MOUNT_MODE=rw` and `DOWNLOAD_ENABLED=true` while `MUSIC_PATH`
+points inside Nextcloud's data directory, `/api/save` would write new
+files there that Nextcloud's own database has no idea exist, risking the
+exact corruption home-drive's own
+[docs/DRIVE.md](../home-drive/docs/DRIVE.md) warns about under "The one
+rule: nothing else writes into the drive." Keep saving YouTube tracks
+pointed at a plain, non-Nextcloud folder instead if you want that feature.
+
+New files added through Nextcloud (a sync client, the web UI, a phone
+upload) show up in PiTune once Navidrome's own scan picks them up, same
+as any other addition to `MUSIC_PATH`: within `ND_SCANSCHEDULE` (every
+hour by default), or immediately via a manual rescan from Navidrome's own
+admin UI. Nothing Nextcloud-side needs to know PiTune is reading from
+here, since Navidrome only ever reads.
 
 ## Ports
 
