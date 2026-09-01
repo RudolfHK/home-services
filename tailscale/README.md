@@ -1,66 +1,65 @@
-# Tailscale: remote access for home-drive, PiTune, and PiHub
+# Tailscale: remote access for home-drive and PiHub
 
 This directory isn't a runnable stack. It's the shared tailnet policy and
-setup docs for accessing this repo's three network-facing projects from
+setup docs for accessing this repo's two network-facing projects from
 outside your home network, over Tailscale. Each project keeps its own
-Tailscale container and config (`home-drive/config/tailscale/`,
-`pitune/tailscale/`, `pihub/tailscale/`); this is only the piece that's
-genuinely shared: the access-control policy, and how to onboard a device.
+Tailscale container and config (`home-drive/tailscale/`,
+`pihub/tailscale/`); this is only the piece that's genuinely shared: the
+access-control policy, and how to onboard a device.
 
-**home-drive already runs on Tailscale exclusively** (no LAN ports at all,
-see `../home-drive/docs/TAILSCALE.md`). **PiTune and PiHub are LAN-first by
-design** (see their own READMEs). Tailscale here is an *additional*, opt-in
-way to reach them from outside the LAN; their existing direct-LAN ports and
-behavior are unchanged.
+**Both home-drive and PiHub are LAN-first by design** (see their own
+READMEs): everything is reachable directly on the LAN with nothing below
+set up. Tailscale here is an *additional*, opt-in way to reach them from
+outside the LAN, over HTTPS via `tailscale serve`; their existing
+direct-LAN ports and behavior are unchanged either way. PiHub's built-in
+media streaming (music, movies, shows, photos, formerly a separate PiTune
+stack) is part of PiHub itself, so there is nothing extra to enable for it
+specifically; enabling PiHub's Tailscale profile covers all of it.
 
 ## Setup order
 
 1. Read [`docs/DEVICE-ONBOARDING.md`](docs/DEVICE-ONBOARDING.md) and do its
    **one-time tailnet setup** (enable device approval, apply
    [`acl-policy.hujson`](acl-policy.hujson)) *before* enabling Tailscale on
-   PiTune or PiHub. The ACL is what keeps a freshly-joined node from
+   home-drive or PiHub. The ACL is what keeps a freshly-joined node from
    exposing more than intended the moment it comes up.
-2. Enable Tailscale per stack you want reachable remotely:
-   `home-drive/docs/TAILSCALE.md` (already required, not optional there),
-   `pitune/README.md`'s Tailscale section, `pihub/README.md`'s Tailscale
-   section.
+2. Enable Tailscale per stack you want reachable remotely: `home-drive`'s
+   README Tailscale section, `pihub/README.md`'s Tailscale section.
 3. Onboard each personal device per `docs/DEVICE-ONBOARDING.md`'s workflow.
 
-## Why the ACL restricts every server to its own serve port(s) only
+## Why the ACL restricts every server to its own serve port only
 
 Joining a tailnet doesn't hide a node's other listening ports from other
 tailnet members. By default, any accepted device can reach any port on any
-other accepted device. PiTune and PiHub each publish direct admin ports on
-the LAN (Navidrome's `:4533`, Jellyfin's `:8096`, PiHub's raw nginx `:80`
-before Tailscale's own HTTPS proxy) specifically so you don't need a VPN
-just to create a Navidrome account or run Jellyfin's setup wizard at home.
-Without an ACL, once these Pis join the tailnet, every one of those admin
-ports would *also* become reachable from anywhere in the tailnet, a much
-bigger exposure than "just the app". `acl-policy.hujson` closes this with
-one rule per service, each scoped to exactly the port(s) that service's own
+other accepted device. PiHub publishes direct admin ports on the LAN
+(Navidrome's `:4533`, Jellyfin's `:8096`, PiHub's raw nginx `:80` before
+Tailscale's own HTTPS proxy) specifically so you don't need a VPN just to
+create a Navidrome account or run Jellyfin's setup wizard at home. Without
+an ACL, once these Pis join the tailnet, every one of those admin ports
+would *also* become reachable from anywhere in the tailnet, a much bigger
+exposure than "just the app". `acl-policy.hujson` closes this with one rule
+per service, each scoped to exactly the port that service's own
 `tailscale serve` answers on:
 
 | Server tag | Ports granted | Why |
 |---|---|---|
-| `tag:home-drive-server` | `443`, `8443`, `9443` | FileBrowser + CouchDB (443), Fauxton at the root (8443), Nextcloud (9443). See `home-drive/docs/TAILSCALE.md`. |
-| `tag:pitune-server` | `443` | The one endpoint `pitune/tailscale/serve.json` answers on. |
-| `tag:pihub-server` | `443` | The one endpoint `pihub/tailscale/serve.json` answers on. |
+| `tag:home-drive-server` | `443` | The one endpoint `home-drive/tailscale/serve.json` answers on, proxying to Nextcloud's nginx. |
+| `tag:pihub-server` | `443` | The one endpoint `pihub/tailscale/serve.json` answers on, proxying to PiHub's nginx, which fronts all of PiHub's products (music, movies, shows, photos, the dashboard). |
 
 Nothing else is granted on any of these nodes: not Navidrome's `4533`, not
 Jellyfin's `8096`, not PiHub's raw nginx `80`.
 
 ### One tag per server, not one tag for the whole repo
 
-Earlier drafts of this policy used a single `tag:home-server` for all three
+Earlier drafts of this policy used a single `tag:home-server` for both
 Pis. That has a real cost: it makes it *impossible* to grant a device
 access to just one service. Tag a device `tag:approved-device` and it can
-reach home-drive, PiTune, *and* PiHub, with no way to hand out less. If you
-ever want to give a guest device PiTune's music without also handing them
-your personal Nextcloud, the services need to carry different tags in the
-first place, which is why each Pi now advertises its own `tag:*-server`
-tag, and why `docs/DEVICE-ONBOARDING.md` shows how to add a second,
-narrower device tag (e.g. `tag:approved-device-pitune`) scoped to just one
-service's ACL rule.
+reach home-drive *and* PiHub, with no way to hand out less. If you ever
+want to give a guest device PiHub's music without also handing them your
+personal Nextcloud, the services need to carry different tags in the first
+place, which is why each Pi advertises its own `tag:*-server` tag, and why
+`docs/DEVICE-ONBOARDING.md` shows how to add a second, narrower device tag
+(e.g. `tag:approved-device-pihub`) scoped to just one service's ACL rule.
 
 ## Why not a literal concurrent-connection cap
 
@@ -90,5 +89,5 @@ reach anything, full stop. See `acl-policy.hujson`'s own comments and
 If you specifically want a *rate/volume* cap in addition to the allowlist
 (protecting against one already-approved device being compromised and
 hammering a service, say), that's a different, complementary control, and
-PiTune's and PiHub's own nginx configs do add a modest per-source
-`limit_conn` for exactly that. See each project's own README.
+PiHub's own nginx config does add a modest per-source `limit_conn` for
+exactly that. See PiHub's own README.

@@ -1,8 +1,8 @@
 # Device onboarding: approving a new device, safely
 
 How to add a new personal device (a phone, a laptop) so it can reach
-home-drive, PiTune, and PiHub from anywhere, while keeping out anything you
-didn't explicitly approve.
+home-drive and PiHub from anywhere, while keeping out anything you didn't
+explicitly approve.
 
 ## What Tailscale actually checks, and what it doesn't
 
@@ -78,10 +78,10 @@ catch and reject instead.
       from this repo and paste it into the editor, replacing whatever was
       there (or merged in, per the step above).
    5. Find every `REPLACE-ME-your-login@example.com` placeholder (there
-      are four, all inside the `tagOwners` block near the top) and
+      are three, all inside the `tagOwners` block near the top) and
       replace it with the email address you sign in to Tailscale with.
-      All four normally get the same address, since you're the one
-      approving devices for all three services; only use different
+      All three normally get the same address, since you're the one
+      approving devices for both services; only use different
       addresses if you specifically want different people to own
       different tags.
    6. Click **Save** in the editor. The console checks the HuJSON before
@@ -97,12 +97,12 @@ catch and reject instead.
       history/clock icon near the editor) if you ever need to see an
       earlier version or roll back.
 3. **Each Pi** running one of these stacks needs its own server tag:
-   `tag:home-drive-server`, `tag:pitune-server`, or `tag:pihub-server`
-   respectively (never the same tag for two different Pis). Set it via
-   that Pi's own `.env` (e.g. `TS_EXTRA_ARGS=--advertise-tags=tag:pitune-server`)
-   before its first `tailscale up`, or apply it afterwards from the admin
-   console's device list. A Pi with no tag matches none of the ACL's rules
-   and is unreachable, same as an untagged client device.
+   `tag:home-drive-server` or `tag:pihub-server` respectively (never the
+   same tag for two different Pis). Set it via that Pi's own `.env` (e.g.
+   `TS_EXTRA_ARGS=--advertise-tags=tag:pihub-server`) before its first
+   `tailscale up`, or apply it afterwards from the admin console's device
+   list. A Pi with no tag matches none of the ACL's rules and is
+   unreachable, same as an untagged client device.
 
 ### 2. Adding a new personal device
 
@@ -116,12 +116,12 @@ catch and reject instead.
    run `tailscale up --advertise-tags=tag:approved-device` from the device
    itself, if your `tagOwners` setup allows self-tagging; the template
    policy only lists your own login, so from the console is simpler).
-   `tag:approved-device` grants all three services at once (see
+   `tag:approved-device` grants both services at once (see
    `../acl-policy.hujson`). For a device that should only ever reach one
-   of them (a guest you're handing PiTune to, say, not your personal
+   of them (a guest you're handing PiHub's music to, say, not your personal
    Nextcloud), don't use this tag. Instead add a narrower one to
-   `tagOwners` (e.g. `tag:approved-device-pitune`) with its own single ACL
-   rule against just `tag:pitune-server`, and tag their device with that.
+   `tagOwners` (e.g. `tag:approved-device-pihub`) with its own single ACL
+   rule against just `tag:pihub-server`, and tag their device with that.
 5. It can now reach `https://<pi-hostname>.<tailnet>.ts.net/` for every Pi
    whose server tag that device's tag is granted against.
 

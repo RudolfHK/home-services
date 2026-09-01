@@ -1,49 +1,64 @@
-# Home Drive: Self-Hosted FileBrowser + Obsidian Sync on Raspberry Pi 5
+# Home Drive: Self-Hosted Nextcloud on Raspberry Pi 5
 
-A private, containerised home drive and shared Obsidian vault hosted on a Raspberry Pi 5.
-**Nothing is exposed to the public internet.** All access is through a Tailscale tailnet
-(WireGuard mesh VPN) using MagicDNS + Tailscale HTTPS certs.
+Google-Drive-style storage on your own hardware: browse and edit in a browser, sync clients
+on desktop and mobile, users and sharing, and file locking, so two people can't write the
+same file at the same time. Reachable directly on your LAN by default, with an optional
+Tailscale profile to reach it from outside the LAN as well.
 
 ## Architecture
 
 ```
-  Phone / Laptop / Tablet
-         │
-    Tailscale App (WireGuard)
-         │
-    ─────────────────────────────────────
-         │           Tailscale Tailnet
-    ─────────────────────────────────────
-         │
-    Raspberry Pi 5  (Docker host)
-    ┌────────────────────────────────────┐
-    │  tailscale container               │
-    │    ├─ MagicDNS: pi.<tailnet>.ts.net│
-    │    └─ serve.json (HTTPS proxy)     │
-    │         │                          │
-    │  ┌──────┴───────────────────────┐  │
-    │  │  filebrowser  (port 8080)    │  │
-    │  │  couchdb      (port 5984)    │  │
-    │  └──────────────────────────────┘  │
-    │         │                          │
-    │    External SSD (USB 3 / NVMe)     │
-    │    /mnt/data/                      │
-    └────────────────────────────────────┘
+  Reachable two ways, either or both at once:
+
+  Phone / Laptop / Tablet, on the LAN                Phone / Laptop, off the LAN
+         │                                                    │
+    http://<LAN host>:<NEXTCLOUD_PORT>/               Tailscale App (WireGuard)
+         │                                                    │
+         │                                        ─────────────────────────
+         │                                             Tailscale Tailnet
+         │                                        ─────────────────────────
+         │                                                    │
+    Raspberry Pi 5  (Docker host)                             │
+    ┌───────────────────────────────────────────────────────────────────┐
+    │                                                                   │
+    │  nextcloud-web (nginx, port ${NEXTCLOUD_PORT}) ◄──────── tailscale │
+    │         │                                       (optional profile)│
+    │  nextcloud-app (php-fpm)                                          │
+    │         │                                                         │
+    │  nextcloud-db (PostgreSQL)   nextcloud-redis (locking)            │
+    │         │                                                         │
+    │    External SSD (USB 3 / NVMe)                                   │
+    │    ${DATA_PATH}/nextcloud/                                        │
+    └───────────────────────────────────────────────────────────────────┘
 ```
+
+Every container talks to every other one over one internal Docker network with a fixed
+subnet (`homedrive_net`, `10.89.0.0/24`). Only `nextcloud-web` publishes a host port; nothing
+else is reachable except through it, on the LAN or (if enabled) via `tailscale serve`.
 
 ## URLs (after setup)
 
-| Service       | URL                                          |
-|---------------|----------------------------------------------|
-| FileBrowser   | `https://<TS_HOSTNAME>.<tailnet>.ts.net/`    |
-| CouchDB API   | `https://<TS_HOSTNAME>.<tailnet>.ts.net/couchdb/` |
-| CouchDB admin (Fauxton) | `https://<TS_HOSTNAME>.<tailnet>.ts.net:8443/_utils/` |
-| Drive (Nextcloud, optional) | `https://<TS_HOSTNAME>.<tailnet>.ts.net:9443/` |
+| Access | URL |
+|--------|-----|
+| LAN (always available) | `http://${NEXTCLOUD_LAN_HOSTNAME}:${NEXTCLOUD_PORT}/` |
+| Tailscale (optional profile) | `https://${TS_HOSTNAME}.${TS_TAILNET}/` |
 
-> Fauxton is served on **port 8443** at the root, not under `/couchdb/`. Its bundle requests
-> absolute paths like `/_all_dbs`, which under the `/couchdb/` prefix would be routed to
-> FileBrowser instead. The REST API works fine under `/couchdb/`, though: that's the URI to
-> give Obsidian LiveSync.
+## Why LAN-direct, with Tailscale as an add-on
+
+This mirrors PiHub's networking in the rest of this repo: a service that's fully usable at
+home with zero extra setup, and an opt-in profile for reaching it from anywhere once you
+need that. Concretely:
+
+- **Nextcloud has its own authentication and per-user accounts.** Unlike a raw admin panel,
+  putting it directly on the LAN doesn't hand out anything an attacker on your Wi-Fi
+  couldn't already try to log into; there's no unauthenticated surface being newly exposed.
+- **A tag-approved Tailscale device works the same everywhere.** Tailscale has no concept of
+  "this device is currently on the LAN" versus "currently remote"; once a device is
+  tag-approved it can reach the tailnet the same way from either place. So "confined to LAN
+  and tailnet by default, with tag-approved devices able to reach it from outside the LAN
+  too" collapses to one design: publish on the LAN, and let the optional `tailscale` profile
+  cover the "from outside the LAN" case for approved devices, exactly like PiHub already
+  does for the rest of this repo's services.
 
 ## Prepare the Pi
 
@@ -56,14 +71,12 @@ checklist that gets you from "Pi boots" to "stack can start".
 
 | Requirement | Why it matters | Where it comes from |
 |-------------|----------------|---------------------|
-| 64-bit Raspberry Pi OS (`aarch64`) | `couchdb:3` and `filebrowser` are published for `linux/arm64`. On a 32-bit OS there is simply no image to pull. | `docker-compose.yml` images |
+| 64-bit Raspberry Pi OS (`aarch64`) | Nextcloud, PostgreSQL and Redis are all published for `linux/arm64`. On a 32-bit OS there is simply no image to pull. | `docker-compose.yml` images |
 | Docker Engine + **Compose v2 plugin** | `install.sh` calls `docker compose` (the plugin), not the old `docker-compose` binary, and hard-fails if it is missing. | `scripts/install.sh` |
-| `/dev/net/tun` present | The tailscale container bind-mounts the TUN device to bring up its WireGuard interface. Without it the container starts and never authenticates. | `docker-compose.yml` → `tailscale.volumes` |
-| Data drive mounted at `DATA_PATH` | Every persistent path (`files`, `filebrowser`, `couchdb`) is a bind mount under `DATA_PATH`. The mounts use `create_host_path: false`, so a missing drive makes the stack refuse to start rather than quietly filling the OS drive. | `docker-compose.yml`, `.env` |
-| `DATA_PATH` subdirs owned by `PUID:PGID` | FileBrowser and CouchDB write as that UID/GID. Root-owned directories produce permission errors on first write. | `.env`, `scripts/mount-drive.sh` |
-| `$DATA_PATH/{files,filebrowser,couchdb}` exist | They are bind-mount sources with `create_host_path: false`. `install.sh` creates them; `mount-drive.sh` creates them too. | `docker-compose.yml`, `scripts/install.sh` |
-| Accurate system clock | Tailscale provisions a real Let's Encrypt certificate. A skewed clock breaks TLS issuance and validation. | `config/tailscale/serve.json` |
-| Tailscale account, reusable auth key, MagicDNS + HTTPS | The container authenticates non-interactively on first boot and serves on `<TS_HOSTNAME>.<TS_TAILNET>:443`. | `.env`, `serve.json` |
+| Data drive mounted at `DATA_PATH` | Every persistent path (`data`, `config`, `db`, `redis`) is a bind mount under `DATA_PATH`. The mounts use `create_host_path: false`, so a missing drive makes the stack refuse to start rather than quietly filling the OS drive. | `docker-compose.yml`, `.env` |
+| `$DATA_PATH/nextcloud/*` owned by the right uid | Nextcloud, PostgreSQL and Redis each run as a different uid inside their own image. `install.sh` resolves each one and chowns accordingly; a root-owned directory produces permission errors on first write. | `scripts/install.sh` |
+| Accurate system clock | Needed for TLS certificate validation, whether that's Nextcloud's own or (if the `tailscale` profile is used) Tailscale's. A skewed clock breaks both issuance and validation. | general |
+| `/dev/net/tun` present (only if using the `tailscale` profile) | The optional tailscale container bind-mounts the TUN device to bring up its WireGuard interface. Without it the container starts and never authenticates. Not needed for LAN-only use. | `docker-compose.yml` → `tailscale.volumes` |
 
 ---
 
@@ -73,7 +86,7 @@ checklist that gets you from "Pi boots" to "stack can start".
 uname -m                # must print: aarch64
 cat /etc/os-release     # Debian 12 (bookworm) or newer
 free -h                 # 4 GB is enough; 8 GB if you plan to add more services
-timedatectl             # "System clock synchronized: yes" — required for HTTPS certs
+timedatectl             # "System clock synchronized: yes"
 ```
 
 If the clock is not synchronised, fix that before anything else:
@@ -99,7 +112,7 @@ sudo usermod -aG docker "$USER"
 newgrp docker            # apply the group without logging out
 
 docker version           # daemon reachable without sudo
-docker compose version   # must be v2.x — the plugin, not docker-compose
+docker compose version   # must be v2.x, the plugin, not docker-compose
 ```
 
 > `install.sh` refuses to run as root, and aborts if the Compose **plugin** is missing.
@@ -108,19 +121,7 @@ docker compose version   # must be v2.x — the plugin, not docker-compose
 
 ---
 
-### 3. Load the TUN kernel module
-
-Tailscale cannot create its WireGuard interface without `/dev/net/tun`. On Raspberry Pi OS
-the module is usually present, but make it explicit and persistent across reboots:
-
-```bash
-ls -la /dev/net/tun || sudo modprobe tun
-echo "tun" | sudo tee /etc/modules-load.d/tun.conf
-```
-
----
-
-### 4. Attach and mount the data drive
+### 3. Attach and mount the data drive
 
 Plug the SSD into a **blue USB 3.0 port** (see [docs/HARDWARE.md](docs/HARDWARE.md)), then:
 
@@ -129,92 +130,41 @@ lsblk -f                          # identify the device, e.g. /dev/sda1
 sudo bash scripts/mount-drive.sh  # optional ext4 format + UUID fstab entry + mount
 ```
 
-The script mounts the drive at `/mnt/data`, creates `files/`, `filebrowser/` and `couchdb/`,
-and chowns them to UID/GID `1000`. Confirm it really is a separate mount. `install.sh` only
-warns if it isn't, and a missing mount means your data quietly lands on the OS drive:
+Confirm it really is a separate mount. `install.sh` only warns if it isn't, and a missing
+mount means your data quietly lands on the OS drive:
 
 ```bash
 mountpoint /mnt/data              # → /mnt/data is a mountpoint
 df -h /mnt/data
 ```
 
+`install.sh` creates and owns the `nextcloud/{data,config,db,redis}` tree itself, resolving
+each container's actual uid rather than assuming one, so there's normally nothing to do here
+beyond mounting the drive.
+
 ---
 
-### 5. Check the data layout
+### 4. (Optional) Load the TUN kernel module
 
-`mount-drive.sh` and `install.sh` both create and chown this layout, so there's normally
-nothing to do here. Just confirm it looks right:
-
-```
-/mnt/data/
-├── files/          → FileBrowser root (/srv inside the container)
-├── filebrowser/    → FileBrowser SQLite database (created on first start)
-├── couchdb/        → CouchDB data files (owned by uid 5984)
-├── couchdb-etc/    → staged CouchDB config, owned by uid 5984 (see below)
-├── backups/        → nightly archives (mode 0700)
-└── tmp/            → staging for backup/restore (never /tmp, which is a RAM tmpfs)
-```
-
-If you are creating it by hand:
+Only needed if you plan to enable the `tailscale` profile. Tailscale cannot create its
+WireGuard interface without `/dev/net/tun`. On Raspberry Pi OS the module is usually
+present, but make it explicit and persistent across reboots:
 
 ```bash
-sudo mkdir -p /mnt/data/{files,filebrowser,couchdb,backups,tmp}
-sudo chown "$(id -u):$(id -g)" /mnt/data /mnt/data/{files,filebrowser,backups,tmp}
-sudo chmod 700 /mnt/data/backups
+ls -la /dev/net/tun || sudo modprobe tun
+echo "tun" | sudo tee /etc/modules-load.d/tun.conf
 ```
-
-### Why `couchdb-etc/` exists
-
-CouchDB's config is **not** mounted from `config/couchdb/` in the repo. `install.sh` copies
-it to `/mnt/data/couchdb-etc/` and chowns it to uid 5984 first, and compose mounts it from
-there.
-
-The reason is a sharp edge in the official image. Its entrypoint runs, under `set -e`:
-
-```sh
-find /opt/couchdb \! \( -user couchdb -group couchdb \) -exec chown -f couchdb:couchdb {} +
-```
-
-A file mounted from the repo is owned by *you*, not uid 5984, so `find` matches it and tries
-to `chown` it, which fails on a read-only bind mount. `chown -f` suppresses the message but
-not the exit status, `find` propagates it, and the entrypoint aborts **before CouchDB ever
-starts**. The symptom is brutal to debug: the container exits instantly, `docker compose logs
-couchdb` is completely empty, and the healthcheck just reports `restarting`.
-
-Staging a copy that is already owned by 5984 means `find` never matches it, so there is
-nothing to chown and nothing to fail.
-
-**To change CouchDB settings**: edit `config/couchdb/zz-homedrive.ini` as usual, then re-run
-`bash scripts/install.sh` (or `sudo cp` it into `/mnt/data/couchdb-etc/` and
-`sudo chown 5984:5984` it) and `docker compose restart couchdb`. Editing the staged copy
-directly works too, but the next `install.sh` run overwrites it.
-
-`/mnt/data/couchdb` itself is chowned to 5984 by `install.sh` for the same reason.
 
 ---
 
-### 6. Prepare Tailscale before first start
-
-Do all of this in the [Tailscale admin console](https://login.tailscale.com/admin) *before*
-starting the stack, so the container comes up already reachable over HTTPS:
-
-1. **Sign in / create a tailnet** and note its name (e.g. `tail1234.ts.net`) → `TS_TAILNET`.
-2. **DNS → enable MagicDNS.**
-3. **DNS → HTTPS Certificates → Enable HTTPS.**
-4. **Settings → Keys → Generate auth key**, tick **Reusable** so the container can
-   re-authenticate after restarts → `TS_AUTHKEY`.
-5. Install the Tailscale app on the phones and laptops that will use the drive.
-
----
-
-### 7. Get the code and fill in `.env`
+### 5. Get the code and fill in `.env`
 
 ```bash
 git clone https://github.com/<you>/home-services.git ~/home-services
 cd ~/home-services/home-drive
 
 cp .env.example .env
-chmod 600 .env          # it holds your auth key and passwords
+chmod 600 .env          # it holds your database and admin passwords
 ```
 
 Find the UID/GID the containers should use:
@@ -228,66 +178,54 @@ Then edit `.env` and set at minimum:
 
 | Variable | Value |
 |----------|-------|
-| `TS_AUTHKEY` | The reusable key from step 6 |
-| `TS_HOSTNAME` | The Pi's tailnet name, e.g. `homepi` (no dots) |
-| `TS_TAILNET` | Your tailnet, e.g. `tail1234.ts.net` |
-| `COUCHDB_PASSWORD` | A strong password (`install.sh` rejects the placeholder value) |
-| `FILEBROWSER_ADMIN_PASSWORD` | A strong password (`install.sh` rejects the placeholder value) |
+| `NEXTCLOUD_LAN_HOSTNAME` | How devices on the LAN reach this box, e.g. `homepi.local` or a static IP |
+| `NEXTCLOUD_ADMIN_USER` / `NEXTCLOUD_ADMIN_PASSWORD` | The first admin account (`install.sh` rejects the placeholder value) |
+| `NEXTCLOUD_DB_PASSWORD` | A strong, random password: `openssl rand -base64 32` |
+| `NEXTCLOUD_REDIS_PASSWORD` | Same: `openssl rand -base64 32` |
 | `DATA_PATH` | `/mnt/data` |
 | `PUID` / `PGID` | Output of `id -u` / `id -g` |
 | `TZ` | e.g. `Europe/London` |
 
-`install.sh` applies `FILEBROWSER_ADMIN_USER` / `FILEBROWSER_ADMIN_PASSWORD` to the running
-container on every run. FileBrowser seeds its own admin account with a well-known default
-password on first start, which on a file server reachable by everyone on your tailnet is a
-real hole. So the reset isn't optional, and re-running `install.sh` is also how you rotate
-that password later.
+Leave the `TS_*` variables empty unless you're also enabling the optional Tailscale
+profile (see below).
 
 ---
 
-### 8. Optional but recommended hardening
+### 6. Optional but recommended hardening
 
 ```bash
 sudo apt-get install -y ufw fail2ban
 
-# Find YOUR LAN subnet first. Do not copy the example below verbatim — allowing
+# Find YOUR LAN subnet first. Do not copy the example below verbatim; allowing
 # the wrong subnet and then enabling ufw locks you out of SSH.
 ip -br -4 addr show eth0        # e.g. 192.168.178.59/24 → use 192.168.178.0/24
 LAN=192.168.178.0/24            # <- change this to match
 
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
-sudo ufw allow from "$LAN" to any port 22 proto tcp   # LAN SSH only
+sudo ufw allow from "$LAN" to any port 22 proto tcp     # LAN SSH only
+sudo ufw allow from "$LAN" to any port "${NEXTCLOUD_PORT:-80}" proto tcp
 sudo ufw enable
 sudo systemctl enable --now fail2ban
 ```
 
-> **Do not add `ufw allow in on tailscale0`.** In this stack Tailscale runs *inside a
-> container*, so `tailscale0` exists only in that container's network namespace. There's no
-> such interface on the host, and the rule matches nothing. Tailnet traffic reaches the
-> container as conntrack-established return traffic on the Docker bridge, which UFW already
-> permits. That rule only makes sense in the host-Tailscale variant (approach B in
-> [docs/TAILSCALE.md](docs/TAILSCALE.md)).
+> **If you also enable the `tailscale` profile, do not add
+> `ufw allow in on tailscale0`.** In this stack Tailscale runs *inside a container*, so
+> `tailscale0` exists only in that container's network namespace. There's no such interface
+> on the host, and the rule matches nothing. Tailnet traffic reaches the container as
+> conntrack-established return traffic on the Docker bridge, which UFW already permits.
 
-If you already added rules referring to `tailscale0` or the wrong subnet, list them by number
-and delete them:
-
-```bash
-sudo ufw status numbered
-sudo ufw delete <number>        # highest number first — deleting renumbers the rest
-```
-
-If you plan to use the nightly cron jobs further down this page, pre-create their log files
-so a non-root crontab can write to them:
+If you plan to use the nightly backup cron job further down this page, pre-create its log
+file so a non-root crontab can write to it:
 
 ```bash
-sudo touch /var/log/homedrive-backup.log /var/log/homedrive-health.log
-sudo chown "$(id -u):$(id -g)" /var/log/homedrive-backup.log /var/log/homedrive-health.log
+sudo touch /var/log/homedrive-backup.log
+sudo chown "$(id -u):$(id -g)" /var/log/homedrive-backup.log
 ```
 
 ---
 
-### 9. Preflight check
+### 7. Preflight check
 
 Run this from the project directory before `install.sh`. Every line should print `OK`:
 
@@ -297,20 +235,14 @@ cd ~/home-services/home-drive
 [ "$(uname -m)" = "aarch64" ]     && echo "OK   64-bit OS"       || echo "FAIL 64-bit OS"
 docker compose version >/dev/null 2>&1 && echo "OK   compose v2" || echo "FAIL compose v2"
 docker info >/dev/null 2>&1       && echo "OK   docker w/o sudo" || echo "FAIL docker w/o sudo"
-[ -e /dev/net/tun ]               && echo "OK   /dev/net/tun"    || echo "FAIL /dev/net/tun"
 mountpoint -q /mnt/data           && echo "OK   drive mounted"   || echo "FAIL drive mounted"
-[ -d /mnt/data/files ]            && echo "OK   files/"          || echo "FAIL files/"
-[ -d /mnt/data/couchdb ]          && echo "OK   couchdb/"        || echo "FAIL couchdb/"
-[ -d /mnt/data/filebrowser ]      && echo "OK   filebrowser/"    || echo "FAIL filebrowser/"
-[ ! -d /mnt/data/filebrowser/filebrowser.db ] && echo "OK   no stray .db directory" || echo "FAIL filebrowser.db is a DIRECTORY - remove it"
 [ -O /mnt/data ]                  && echo "OK   /mnt/data owned by me" || echo "FAIL /mnt/data ownership"
 [ -f .env ]                       && echo "OK   .env present"    || echo "FAIL .env present"
 timedatectl show -p NTPSynchronized --value | grep -q yes && echo "OK   clock synced" || echo "FAIL clock synced"
 docker compose --env-file .env config >/dev/null 2>&1 && echo "OK   compose file valid" || echo "FAIL compose file valid"
 ```
 
-Once every line reads `OK`, continue with the Quick Start below. Steps 1 through 3 are
-already done, so you can go straight to `bash scripts/install.sh`.
+Once every line reads `OK`, continue with the Quick Start below.
 
 ---
 
@@ -326,7 +258,7 @@ cd home-services/home-drive
 # 2. Copy and fill in environment variables
 cp .env.example .env
 chmod 600 .env
-nano .env   # set TS_AUTHKEY, COUCHDB_PASSWORD, FILEBROWSER_ADMIN_PASSWORD, etc.
+nano .env   # set NEXTCLOUD_LAN_HOSTNAME, NEXTCLOUD_ADMIN_PASSWORD, etc.
 
 # 3. Format + mount the external data drive
 sudo bash scripts/mount-drive.sh
@@ -334,88 +266,291 @@ sudo bash scripts/mount-drive.sh
 # 4. Install Docker (if not present) and bring up the stack
 bash scripts/install.sh
 
-# 5. Open the Tailscale admin console
-#    - approve the new node
-#    - enable MagicDNS and HTTPS (Machine settings → Enable HTTPS)
-
-# 6. Open https://<TS_HOSTNAME>.<tailnet>.ts.net/  in your browser
+# 5. Open http://<NEXTCLOUD_LAN_HOSTNAME>:<NEXTCLOUD_PORT>/ in your browser
 ```
 
-## Ports (internal, not exposed to host)
+## Enabling remote access over Tailscale (optional)
 
-All traffic enters through the **tailscale** container; no host ports are published.
+Do this only if you also want the drive reachable from outside the LAN, from a device
+already approved on your tailnet.
 
-| Container   | Internal port | Bind address | Protocol |
-|-------------|--------------|--------------|----------|
-| filebrowser | 8080         | `127.0.0.1`  | HTTP     |
-| couchdb     | 5984         | `127.0.0.1`  | HTTP     |
+1. Apply [`../tailscale/acl-policy.hujson`](../tailscale/acl-policy.hujson) to your tailnet
+   and onboard your device per
+   [`../tailscale/docs/DEVICE-ONBOARDING.md`](../tailscale/docs/DEVICE-ONBOARDING.md), if you
+   haven't already for another service in this repo.
+2. In the [Tailscale admin console](https://login.tailscale.com/admin):
+   - **DNS → enable MagicDNS.**
+   - **DNS → HTTPS Certificates → Enable HTTPS.**
+   - **Settings → Keys → Generate auth key.** Prefer a short-lived, non-reusable key; see the
+     comment above `TS_AUTHKEY` in `.env.example` for why that's enough.
+3. Fill in `TS_AUTHKEY`, `TS_HOSTNAME`, `TS_TAILNET` and `TS_EXTRA_ARGS` in `.env`.
+4. Start the profile:
+   ```bash
+   docker compose --profile tailscale up -d
+   ```
+5. Open `https://${TS_HOSTNAME}.${TS_TAILNET}/` from the approved device.
 
-Both bind to loopback **inside the tailscale container's network namespace**. That is
-reachable by `tailscale serve` but not from the tailnet IP directly, so clients cannot skip
-the HTTPS proxy and speak plaintext HTTP to either service.
+See [`tailscale/README.md`](tailscale/README.md) for how `serve.json` and the nginx
+protocol-detection logic fit together, and troubleshooting below if port 443 doesn't answer.
+
+## Ports
+
+| Container | Port | Reachable from |
+|-----------|------|-----------------|
+| `nextcloud-web` (nginx) | `${NEXTCLOUD_PORT}` (default `80`) | LAN, always |
+| `tailscale` (optional profile) | `443` | Tailnet, only if the `tailscale` profile is running; proxies to `nextcloud-web` |
+
+Every other container (`nextcloud-app`, `nextcloud-db`, `nextcloud-redis`, `nextcloud-cron`)
+publishes nothing; they're reachable only from other containers on `homedrive_net`.
+
+## Clients
+
+Install the official Nextcloud clients and point them at your chosen URL from the table
+above:
+
+- **Desktop** (Windows/macOS/Linux): full two-way sync of selected folders, or Virtual Files
+  mode where nothing is downloaded until opened.
+- **Android / iOS**: browse, auto-upload photos, make files available offline.
+- **Anything WebDAV**: `<url>/remote.php/dav/files/<user>/` works in Windows Explorer, macOS
+  Finder, Nautilus, and rclone.
+
+**Use an app password per device**, not your login: Personal settings → Security → Devices &
+sessions → Create new app password. A lost phone is then revoked with one click and can't be
+used to change your password or read your sessions.
+
+## How the corruption protection actually works
+
+Three separate mechanisms handle this, and it's worth knowing which one does what, since
+they fail differently.
+
+### 1. Transactional file locking, automatic
+
+Every write takes a short-lived lock in Redis first. A second client trying to write the
+same file gets `423 Locked` and retries, instead of interleaving its bytes with the first
+writer's. **This is the thing that prevents corruption.** It's always on, and you never see
+it unless two clients genuinely collide.
+
+It needs shared, fast, atomic storage, which is why there's a Redis container:
+`'filelocking.enabled' => true` with `memcache.locking` pointed at Redis in
+[zz-homedrive.config.php](config/nextcloud/zz-homedrive.config.php).
+
+Locks expire after 15 minutes (`filelocking.ttl`) so a client that dies mid-write can't block
+a file forever. The `nextcloud-cron` container is what actually clears them, which is why
+that container isn't optional either.
+
+### 2. Exclusive locks, deliberate and user-visible
+
+The `files_lock` app, installed by `install.sh`. Right-click a file → **Lock file**. While
+locked:
+
+- everyone else sees it as read-only, with your name and the time,
+- the desktop clients refuse to upload changes to it,
+- WebDAV clients (Word, Excel, LibreOffice over a mounted drive) take and release these
+  locks *automatically* when they open and close a document.
+
+This is the answer to "two people must not edit the same file at once" in the workflow
+sense. Unlock manually, or let it expire; a lock a user forgot about doesn't become
+permanent.
+
+### 3. Versions and trash: the recovery net
+
+Locking prevents the collision; versions save you when something goes wrong anyway. Every
+change keeps a version (90 days) and deleted files sit in the trash (30 days), both set to
+`auto` so Nextcloud shrinks them rather than filling the drive.
+
+Right-click → Versions → Restore.
+
+### What none of it protects against
+
+- **Two people editing the same file on purpose, sequentially.** The second person's save
+  wins, and the first version is in the version history. Locking is advisory in the sense
+  that a user can always unlock.
+- **A file edited outside Nextcloud.** See the next section.
+- **Bit rot on the drive itself.** That's what SMART monitoring and backups are for.
+
+## The one rule: nothing else writes into the drive without telling Nextcloud
+
+Nextcloud keeps an index of every file in its database. Write into
+`${DATA_PATH}/nextcloud/data/` from outside (a shell, rsync) and Nextcloud has no idea the
+file exists. Worse, it may overwrite it later, because as far as it's concerned that name
+is free.
+
+This matters beyond this stack: elsewhere in this repo, PiHub can be pointed at a folder
+inside this Nextcloud data directory as its media library (see `pihub/README.md`'s
+"Mounting a Nextcloud folder as your media library"), and PiHub's own auto-download feature
+writes new files into it directly. Any process that writes into `nextcloud/data/` from
+outside Nextcloud, PiHub included, needs Nextcloud told about it afterwards:
+
+```bash
+docker exec -u www-data homedrive-nextcloud-app php occ files:scan --all
+```
+
+Want a non-Nextcloud folder visible inside the drive as well? Do it properly, through
+**Settings → Administration → External storage** as a *Local* mount. Nextcloud then knows
+it's external and rescans it, but locking and versioning do **not** apply there, so treat it
+as a viewing convenience, not a place to collaborate.
+
+## Operating it
+
+### Starting and stopping
+
+```bash
+docker compose ps              # all five containers (plus tailscale, if that profile is on)
+docker compose stop            # stop, keep them
+docker compose down            # stop and remove
+docker compose up -d           # bring the stack back
+```
+
+### Autostart at boot
+
+`install.sh` installs and enables `homedrive.service`, so the stack comes back after every
+reboot. The switch:
+
+```bash
+bash scripts/autostart.sh status   # is it on? is it running?
+bash scripts/autostart.sh on
+bash scripts/autostart.sh off
+```
+
+(`systemctl enable/disable homedrive` does the same thing; the script exists so that `off`
+also stops the containers, which matters for the reason explained below.)
+
+**Why a systemd unit when every container already has `restart: unless-stopped`?** Because
+that policy covers less than it appears to:
+
+| Situation | `restart: unless-stopped` | The unit |
+|---|---|---|
+| A container crashes while the Pi is running | restarts it | not involved |
+| Reboot, containers still exist | restores them | also fine |
+| Reboot after `docker compose down` | nothing exists to restore | recreates them |
+| **Docker starts before the USB drive mounts** | five failed containers | waits |
+
+That last row is the one that actually bites on a Pi. Every container binds a path under
+`${DATA_PATH}` with `create_host_path: false`, so if Docker wins the race against the
+external drive they all fail to start and simply stay dead. A restart policy has no way to
+express "wait for that filesystem," so the unit declares `RequiresMountsFor=${DATA_PATH}`
+and the script additionally waits (up to `DRIVE_MOUNT_WAIT`, default 180s) for the bind-mount
+directories to appear before calling `docker compose up -d`.
+
+So the two mechanisms split the job: **systemd owns starting the stack at boot, Docker's
+restart policy owns recovering it from a crash while the machine is running.**
+
+**Why `off` also stops the containers.** `unless-stopped` restores any container that was
+*running* when the daemon last stopped. Disabling the boot unit while leaving the stack up
+would therefore still bring it back at the next boot, and the switch would look broken.
+`autostart.sh off` (and `systemctl disable --now`) stops them, which is what makes the
+setting stick.
+
+### occ
+
+```bash
+# The occ admin command, for everything below
+alias occ='docker exec -u www-data homedrive-nextcloud-app php /var/www/html/occ'
+
+occ status                       # installed? maintenance? version?
+occ user:list
+occ files:scan --all             # after adding files from outside
+occ maintenance:mode --off       # if a backup was interrupted
+occ app:list                     # is files_lock enabled?
+occ config:list system           # effective configuration
+```
+
+### Upgrades
+
+```bash
+docker compose pull
+docker compose up -d
+docker exec -u www-data homedrive-nextcloud-app php occ upgrade   # if asked to
+```
+
+Never skip a major version. Nextcloud only supports one-major-at-a-time upgrades. Pin
+`NEXTCLOUD_TAG` in `.env` once the stack works, and step it deliberately.
 
 ## Scheduled jobs
 
-The health check installs itself as a systemd timer:
-
-```bash
-bash scripts/install-monitoring.sh
-```
-
-That runs the check every 15 minutes, puts `homedrive-health` and `homedrive-status` on
-your `PATH`, and, if a screen is attached to the Pi, flashes the result onto it for five
-seconds after each run. See [docs/MONITORING.md](docs/MONITORING.md).
-
-The backup is still a crontab entry (`crontab -e`):
+Backups are a crontab entry (`crontab -e`):
 
 ```cron
 # Nightly backup at 02:30
 30 2 * * * /home/pi/home-services/home-drive/scripts/backup.sh >> /var/log/homedrive-backup.log 2>&1
 ```
 
-Prefer cron for the health check too? `bash scripts/install-monitoring.sh --cron` writes an
-hourly entry and a logrotate rule instead of the timer.
+See [docs/BACKUP.md](docs/BACKUP.md) for what's included, restore procedures, and off-Pi
+copies with rclone.
 
 ## Security model
 
-The tailnet is the trust boundary. Everything below assumes an attacker who is *not* on
-your tailnet has no path in at all, and focuses on limiting the damage of the things that
-can actually go wrong: a stolen laptop that is still logged into Tailscale, a backup
-archive synced to someone else's cloud, or a compromised container.
+Everything below assumes the LAN itself is reasonably trusted (the usual case for a home
+network), and focuses on limiting what's exposed beyond it and the damage of the things that
+can actually go wrong: a stolen laptop still logged into a sync client, a backup archive
+synced to someone else's cloud, or a compromised container.
 
 | Control | What it does |
 |---------|--------------|
-| No published host ports | Nothing in the stack is reachable from the LAN or the internet. Every request arrives through `tailscale serve`. |
-| Services bound to `127.0.0.1` | Inside the tailscale netns. Clients cannot bypass the HTTPS proxy and talk plaintext HTTP to FileBrowser or CouchDB over the tailnet IP. |
-| php-fpm bound to `127.0.0.1:9000` | The drive's most important binding. Sharing the tailscale netns means the image default of `listen = 9000` would publish an unauthenticated FastCGI socket (that's remote code execution) to the whole tailnet. Overridden in `config/nextcloud/zz-listen.conf`. |
-| PostgreSQL and Redis on loopback, Redis password-protected | Same reason. Set explicitly in `command:`, never left on the image default. |
-| Nextcloud `trusted_proxies` | Without it every request appears to come from localhost, and the brute-force protection rate-limits all users together instead of the one guessing passwords. |
-| `serve`, never `funnel` | Tailnet-only. Funnel (public internet exposure) is not configured anywhere and should not be. |
-| CouchDB `require_valid_user = true` | Set in `[chttpd]`, where CouchDB 3 actually reads it. `/_up` is the only exemption, so the container healthcheck needs no credentials. |
-| FileBrowser admin password forced from `.env` | `install.sh` resets it on every run instead of leaving FileBrowser's own default in place. |
-| `.env` at mode 0600 | `install.sh` tightens it if you forget. It holds the tailnet auth key and both admin passwords. |
-| Backups at mode 0600, `backups/` at 0700 | The archive contains every note in the vault as plaintext JSON. |
+| Only `nextcloud-web` publishes a port | `nextcloud-app` (php-fpm), `nextcloud-db` and `nextcloud-redis` are reachable only from other containers on `homedrive_net`, never from the LAN or a host process. |
+| Fixed compose subnet (`10.89.0.0/24`) | Lets `trusted_proxies` name a stable CIDR instead of Compose's non-deterministic auto-assigned one, so it doesn't silently stop matching after a stack rebuild. |
+| Redis password-protected | Set explicitly in `command:`, never left on the image default. |
+| Nextcloud `trusted_proxies` | Without it every request appears to come from nginx's own container address, and the brute-force protection would rate-limit all users together instead of the one guessing passwords. |
+| No `OVERWRITEPROTOCOL`/`OVERWRITEHOST` | Nextcloud detects scheme and host per request from the trusted-proxy headers instead, which is what makes plain-HTTP LAN access and HTTPS-via-`tailscale serve` both work correctly at the same time. |
+| `serve`, never `funnel` (Tailscale profile) | Tailnet-only. Funnel (public internet exposure) is not configured anywhere and should not be. |
+| `.env` at mode 0600 | `install.sh` tightens it if you forget. It holds the admin, database and Redis passwords. |
+| Backups at mode 0600, `backups/` at 0700 | The archive contains a full database dump. |
 | `.env` excluded from backups | The archive can be pushed to third-party storage by rclone; secrets must not ride along. |
-| Credentials off the command line | `backup.sh`, `restore.sh` and the monitoring library hand passwords to `curl` through a config file on stdin. `ps auxww` shows every argument of a `docker exec`, and these run every 15 minutes from a timer. |
-| `no-new-privileges`, `cap_drop: ALL` | On FileBrowser and CouchDB. The tailscale container keeps `NET_ADMIN`/`NET_RAW` because it has to manage a WireGuard interface. |
-| FileBrowser runs as `PUID:PGID` | Not root. The upstream image has no PUID/PGID handling, so this is set with compose's `user:`. |
-| No shell or command execution in FileBrowser | `commands` and `shell` are empty in `settings.json`. |
+| Credentials off the command line | `backup.sh` and `restore.sh` hand the database password to `psql`/`pg_dump` through the container's stdin, never as a `docker exec` argument. `ps auxww` shows every argument of a `docker exec`. |
+| `no-new-privileges`, `cap_drop: ALL` | On every Nextcloud-stack container. The optional tailscale container keeps `NET_ADMIN`/`NET_RAW` because it has to manage a WireGuard interface. |
 
 ### What this does *not* protect against
 
-- Anyone with a device on your tailnet is inside the boundary. Use Tailscale ACLs if you
-  share the tailnet with other people.
-- CouchDB admin credentials are passed to the container as environment variables and are
-  visible in `docker inspect` to anyone with Docker socket access, which on this box is
+- Anyone with access to your LAN can reach Nextcloud's login page. Its own account
+  authentication (and two-factor, if you enable it) is the barrier at that point, same as
+  any self-hosted app on a home network.
+- Anyone with a tailnet device tagged `tag:approved-device` (if you enable the Tailscale
+  profile) is inside that boundary too. Use Tailscale ACLs if you share the tailnet with
+  other people; see `../tailscale/README.md`.
+- Nextcloud's database credentials are passed to the container as environment variables and
+  are visible in `docker inspect` to anyone with Docker socket access, which on this box is
   root-equivalent anyway.
-- End-to-end encryption of your notes is Obsidian LiveSync's passphrase, not this stack's.
-  Set it, and the vault is unreadable even from a leaked backup archive.
+
+## Resource cost on a Pi 5
+
+Roughly 900 MB of RAM for the five containers at idle, comfortable on a 4 GB Pi 5 with an
+SSD. Two things to watch:
+
+- **Previews** are the most expensive thing Nextcloud does. The config caps them at
+  1024x1024 and trims the provider list to images and audio; the default list spawns
+  external binaries for office documents and video.
+- **The database on an SD card** will be the bottleneck and will wear the card out. If the
+  OS is on microSD, this is the argument for the NVMe HAT in
+  [docs/HARDWARE.md](docs/HARDWARE.md).
 
 ---
 
 ## Troubleshooting
 
-### Everything is healthy but nothing answers on port 443
+### Stack refuses to start: "bind source path does not exist"
+
+Working as intended. The bind mounts use `create_host_path: false`, so if the external
+drive is not mounted Docker fails instead of silently creating the paths on the SD card and
+writing your data there.
+
+```bash
+mountpoint /mnt/data      # the actual question
+sudo mount -a
+bash scripts/install.sh   # recreates the subdirectories once the drive is back
+```
+
+### Nothing answers on the LAN port
+
+```bash
+docker compose ps                  # is nextcloud-web running and healthy?
+curl -I http://localhost:${NEXTCLOUD_PORT:-80}/
+```
+
+If `nextcloud-web` shows healthy but nothing answers, check `NEXTCLOUD_PORT` in `.env`
+actually matches what you're requesting, and that a firewall rule (step 6 above) isn't
+blocking it from the device you're testing on.
+
+### Tailscale profile: everything is healthy but nothing answers on port 443
 
 Almost always a bad `serve.json`. `containerboot` expands **only** `${TS_CERT_DOMAIN}` in
 that file. `${TS_HOSTNAME}`, `${TS_TAILNET}` and friends are passed through verbatim,
@@ -438,7 +573,7 @@ and the Pi. It is not a Docker or registry problem. On a Pi 5 the usual causes a
    `sudo ethtool -K eth0 tso off gso off gro off tx off rx off`, and persist with
    `sudo nmcli connection modify "Wired connection 1" ethtool.feature-tso off ethtool.feature-gso off ethtool.feature-gro off ethtool.feature-tx off ethtool.feature-rx off`.
 2. **Under-voltage**: `vcgencmd get_throttled` must print `0x0`. A Pi 5 with a bus-powered
-   SSD needs a real 5 V / 5 A supply.
+   SSD needs a real 5V / 5A supply.
 3. **USB 3 interference with 2.4 GHz Wi-Fi**: only relevant if you're on `wlan0`.
 
 `install.sh` retries the pull three times, and if the registry is still unreachable but every
@@ -449,45 +584,17 @@ entirely:
 bash scripts/install.sh --skip-pull
 ```
 
-### Stack refuses to start: "bind source path does not exist"
-
-Working as intended. The bind mounts use `create_host_path: false`, so if the external
-drive is not mounted Docker fails instead of silently creating the paths on the SD card and
-writing your data there.
-
-```bash
-mountpoint /mnt/data      # the actual question
-sudo mount -a
-bash scripts/install.sh   # recreates the subdirectories once the drive is back
-```
-
-### FileBrowser fails to open its database
-
-Check for a stray directory left by an older version of this stack, which bind-mounted
-`filebrowser.db` as a *file*:
-
-```bash
-[ -d /mnt/data/filebrowser/filebrowser.db ] && sudo rmdir /mnt/data/filebrowser/filebrowser.db
-```
-
-`install.sh` removes it automatically if it is empty.
-
-### TUN device not found
+### TUN device not found (Tailscale profile only)
 ```bash
 ls -la /dev/net/tun     # should exist
 sudo modprobe tun       # load the module
 echo "tun" | sudo tee /etc/modules-load.d/tun.conf  # persist across reboots
 ```
 
-### MagicDNS / HTTPS cert not working
+### MagicDNS / HTTPS cert not working (Tailscale profile only)
 - In the Tailscale admin console → DNS → enable MagicDNS.
 - Machines → click your Pi → enable HTTPS.
 - Inside the container: `docker exec homedrive-tailscale tailscale cert <hostname>.<tailnet>.ts.net`
-
-### CORS errors in Obsidian LiveSync
-- Check `config/couchdb/zz-homedrive.ini` has the correct origins.
-- Restart CouchDB: `docker compose restart couchdb`
-- Verify: `curl -I https://<host>/couchdb/` and look for the `Access-Control-Allow-Origin` header.
 
 ### External drive not mounting
 ```bash
@@ -499,22 +606,18 @@ journalctl -xe | grep mount  # check errors
 
 ### Container stays unhealthy
 ```bash
-docker compose ps          # view status
-docker compose logs tailscale
-docker compose logs filebrowser
-docker compose logs couchdb
+docker compose ps
+docker compose logs nextcloud-app
+docker compose logs nextcloud-db
+docker compose logs nextcloud-web
 ```
 
 ## Docs
 
 - [Hardware guide](docs/HARDWARE.md)
 - [OS + Docker setup](docs/SETUP.md)
-- [Tailscale integration](docs/TAILSCALE.md)
-- [Obsidian sync](docs/OBSIDIAN.md): seed device, second device, and troubleshooting
 - [Backups](docs/BACKUP.md)
-- [Monitoring](docs/MONITORING.md): the health check, the status screen, and alerts
-- [The drive](docs/DRIVE.md): optional Nextcloud, covering sync clients, sharing, and how
-  the file locking works
+- [Tailscale integration](../tailscale/README.md) (shared with PiHub)
 
 ## Scripts
 
@@ -522,12 +625,6 @@ docker compose logs couchdb
 |--------|--------------|
 | `scripts/mount-drive.sh` | One-time: format and persistently mount the data drive |
 | `scripts/install.sh` | Bring the stack up. Idempotent, so re-run it after any config change |
-| `scripts/install-drive.sh` | Install the optional Nextcloud drive: sync clients, sharing, file locking |
-| `scripts/drive-autostart.sh` | Turn the drive's start-at-boot on or off, and check which it is |
-| `scripts/install-monitoring.sh` | Install the health-check timer and the `homedrive-status` / `homedrive-health` commands |
-| `scripts/health-dashboard.sh` | The status screen: storage breakdown, transfer rates, file activity, Pi temperature and load. Also draws on a screen attached to the Pi |
-| `scripts/health-monitor.sh` | The unattended check: runs from a timer, quiet unless something is wrong, alerts via ntfy |
-| `scripts/healthcheck.sh` | Compatibility shim, forwards to `health-monitor.sh` |
-| `scripts/backup.sh` | Nightly CouchDB + FileBrowser backup |
+| `scripts/autostart.sh` | Turn start-at-boot on or off, and check which it is |
+| `scripts/backup.sh` | Nightly database + config backup |
 | `scripts/restore.sh` | Restore from a backup archive |
-| `scripts/obsidian-check.sh` | Is Obsidian LiveSync actually reaching CouchDB? Document count and recent changes |

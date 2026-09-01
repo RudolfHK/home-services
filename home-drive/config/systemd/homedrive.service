@@ -1,23 +1,23 @@
-# Home Drive — bring the Nextcloud drive up at boot.
+# Home Drive — bring the Nextcloud stack up at boot.
 #
-# Installed by scripts/drive-autostart.sh, which substitutes @USER@, @PROJECT@
+# Installed by scripts/autostart.sh, which substitutes @USER@, @PROJECT@
 # and @DATA_PATH@.
 #
 # Why this exists when every container already has `restart: unless-stopped`:
 #
 #   * A restart policy only restores containers that still exist. After a
-#     `docker compose down` there is nothing to restore, and the drive silently
+#     `docker compose down` there is nothing to restore, and the stack silently
 #     does not come back after the next reboot.
-#   * A restart policy cannot wait for a filesystem. Every drive container binds
+#   * A restart policy cannot wait for a filesystem. Every container binds
 #     paths under @DATA_PATH@ with create_host_path:false, so if Docker starts
 #     before the external drive is mounted they all fail to start and stay dead.
 #     RequiresMountsFor below, plus the wait loop in the script, is the fix.
 #
-# Division of labour: systemd owns starting the drive at boot, Docker's restart
+# Division of labour: systemd owns starting the stack at boot, Docker's restart
 # policy owns recovering it from a crash while the machine is running.
 [Unit]
-Description=Home Drive — Nextcloud drive
-Documentation=file://@PROJECT@/docs/DRIVE.md
+Description=Home Drive — Nextcloud
+Documentation=file://@PROJECT@/README.md
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
@@ -35,10 +35,10 @@ RemainAfterExit=yes
 User=@USER@
 WorkingDirectory=@PROJECT@
 
-ExecStart=/bin/bash @PROJECT@/scripts/drive-autostart.sh start
+ExecStart=/bin/bash @PROJECT@/scripts/autostart.sh start
 # Stopping the unit stops the containers, which also gives PostgreSQL a clean
 # shutdown instead of leaving it to be killed when the machine goes down.
-ExecStop=/bin/bash @PROJECT@/scripts/drive-autostart.sh stop
+ExecStop=/bin/bash @PROJECT@/scripts/autostart.sh stop
 
 # First boot after an image pull can spend minutes on a database upgrade, and
 # the mount wait is inside ExecStart.

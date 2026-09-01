@@ -3,13 +3,13 @@
  * zz-homedrive.config.php — Home Drive additions to the Nextcloud config.
  *
  * Nextcloud reads config.php first, then every *.config.php in the same
- * directory in alphabetical order, so this file loads last and wins. Same
- * pattern as config/couchdb/zz-homedrive.ini — the container's own generated
- * files (config.php, redis.config.php, apcu.config.php …) stay untouched and
- * upgradeable, and everything specific to this deployment lives here.
+ * directory in alphabetical order, so this file loads last and wins. The
+ * container's own generated files (config.php, redis.config.php,
+ * apcu.config.php …) stay untouched and upgradeable, and everything specific
+ * to this deployment lives here.
  *
- * install-drive.sh stages a copy into ${DATA_PATH}/nextcloud/config/ owned by
- * the web user. Edit this file, re-run install-drive.sh to apply.
+ * install.sh stages a copy into ${DATA_PATH}/nextcloud/config/ owned by the
+ * web user. Edit this file, re-run install.sh to apply.
  *
  * Anything already provided through environment variables in docker-compose.yml
  * (trusted domains, overwrite host/protocol, database, Redis) is deliberately
@@ -19,12 +19,18 @@
 $CONFIG = array(
 
   /**
-   * TLS is terminated by `tailscale serve`, which then proxies to 127.0.0.1.
-   * Without trusting that proxy, every request appears to come from localhost:
-   * the brute-force protection would then rate-limit *all* users together after
-   * one of them fails a login, and the security log would name the wrong host.
+   * `nextcloud-web` (nginx) is the only thing that ever talks to this
+   * container directly — reached either straight from the LAN or, if the
+   * optional Tailscale profile is running, via `tailscale serve` proxying
+   * to nginx first. Either way, nginx is the proxy in front of PHP, so its
+   * IP (always somewhere in this fixed compose subnet — see
+   * docker-compose.yml's top-level `networks:` block) is what needs
+   * trusting here. Without this, every request appears to come from
+   * nginx's own container: the brute-force protection would rate-limit
+   * *all* users together after one of them fails a login, and Nextcloud
+   * would never see the real scheme (http vs https) nginx resolved for it.
    */
-  'trusted_proxies'       => array('127.0.0.1', '::1'),
+  'trusted_proxies'       => array('10.89.0.0/24'),
   'forwarded_for_headers' => array('HTTP_X_FORWARDED_FOR'),
 
   /**
@@ -37,9 +43,9 @@ $CONFIG = array(
    * the actual corruption protection, and it is only reliable with a shared
    * memory backend — the Redis container exists for this.
    *
-   * Separately, the files_lock app (installed by install-drive.sh) provides
+   * Separately, the files_lock app (installed by install.sh) provides
    * *user-visible* exclusive locks: manual "lock this file" in the web UI, and
-   * automatic WebDAV LOCK for desktop applications. See docs/DRIVE.md.
+   * automatic WebDAV LOCK for desktop applications. See ../../README.md.
    */
   'filelocking.enabled'  => true,
   // How long a lock survives without being refreshed. Lower than the default

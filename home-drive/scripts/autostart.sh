@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# drive-autostart.sh — control whether the Nextcloud drive comes up at boot.
+# autostart.sh — control whether the stack comes up at boot.
 #
-#   bash scripts/drive-autostart.sh status      # is autostart on? is it running?
-#   bash scripts/drive-autostart.sh on          # enable and start it now
-#   bash scripts/drive-autostart.sh off         # disable and stop it now
-#   bash scripts/drive-autostart.sh install     # write + enable the systemd unit
-#   bash scripts/drive-autostart.sh uninstall   # remove the unit, leave the drive running
+#   bash scripts/autostart.sh status      # is autostart on? is it running?
+#   bash scripts/autostart.sh on          # enable and start it now
+#   bash scripts/autostart.sh off         # disable and stop it now
+#   bash scripts/autostart.sh install     # write + enable the systemd unit
+#   bash scripts/autostart.sh uninstall   # remove the unit, leave it running
 #
 # `start` and `stop` are what the systemd unit calls. You do not normally run
 # them by hand — use `on` / `off`, which also flip the boot setting.
 #
-# See docs/DRIVE.md.
+# See README.md's "Enable or disable at boot" section.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="$PROJECT_DIR/.env"
-UNIT_NAME="homedrive-drive.service"
+UNIT_NAME="homedrive.service"
 UNIT_SRC="$PROJECT_DIR/config/systemd/$UNIT_NAME"
 UNIT_DEST="/etc/systemd/system/$UNIT_NAME"
 
@@ -40,7 +40,7 @@ source "$ENV_FILE"
 set +a
 
 DATA_PATH="${DATA_PATH:-/mnt/data}"
-COMPOSE=(docker compose -f "$PROJECT_DIR/docker-compose.yml" --env-file "$ENV_FILE" --profile drive)
+COMPOSE=(docker compose -f "$PROJECT_DIR/docker-compose.yml" --env-file "$ENV_FILE")
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 have_systemd() { command -v systemctl >/dev/null 2>&1; }
@@ -78,7 +78,7 @@ cmd_start() {
     while ! mounts_ready; do
       if [[ "$waited" -ge "$max" ]]; then
         error "${DATA_PATH}/nextcloud is still missing after ${max}s.
-       Every drive container binds a path under it with create_host_path:false,
+       Every container binds a path under it with create_host_path:false,
        so starting now would only produce five failed containers.
        Check the drive is mounted:  mount | grep ${DATA_PATH}"
       fi
@@ -88,22 +88,22 @@ cmd_start() {
     info "Directories appeared after ${waited}s."
   fi
 
-  info "Starting the drive…"
+  info "Starting the stack…"
   "${COMPOSE[@]}" up -d "${NC_SERVICES[@]}"
-  info "Drive started ($(running_count)/${#NC_SERVICES[@]} containers running)."
+  info "Started ($(running_count)/${#NC_SERVICES[@]} containers running)."
 }
 
 cmd_stop() {
-  info "Stopping the drive…"
+  info "Stopping the stack…"
   # `stop`, never `down`: down removes the containers, and a stop/start cycle
   # would then have to recreate them — losing the crash-recovery restart policy
   # in between and taking far longer.
   "${COMPOSE[@]}" stop "${NC_SERVICES[@]}" || true
-  info "Drive stopped."
+  info "Stopped."
 }
 
 cmd_install() {
-  have_systemd || error "systemd not found. Without it, Docker's 'unless-stopped' policy is the only autostart — see docs/DRIVE.md."
+  have_systemd || error "systemd not found. Without it, Docker's 'unless-stopped' policy is the only autostart — see README.md."
   [[ "$EUID" -ne 0 ]] || error "Do not run this as root — the unit must run as the user in the docker group."
   [[ -f "$UNIT_SRC" ]] || error "$UNIT_SRC not found."
 
@@ -111,7 +111,7 @@ cmd_install() {
   # the exec bit — git with core.fileMode=false is the usual way — would fail
   # with systemd's bare 203/EXEC and nothing to explain it. (The unit also
   # invokes it through /bin/bash, so this is the second line of defence.)
-  chmod +x "$SCRIPT_DIR/drive-autostart.sh" 2>/dev/null || true
+  chmod +x "$SCRIPT_DIR/autostart.sh" 2>/dev/null || true
 
   info "Installing $UNIT_NAME…"
   sed -e "s|@PROJECT@|$PROJECT_DIR|g" \
@@ -120,18 +120,18 @@ cmd_install() {
       "$UNIT_SRC" | sudo tee "$UNIT_DEST" >/dev/null
   sudo systemctl daemon-reload
   sudo systemctl enable "$UNIT_NAME" >/dev/null
-  info "Autostart enabled — the drive will come up on every boot."
+  info "Autostart enabled — the stack will come up on every boot."
 }
 
 cmd_uninstall() {
   have_systemd || return 0
   info "Removing $UNIT_NAME…"
-  # `disable` without --now: leave a running drive running. Removing the boot
+  # `disable` without --now: leave a running stack running. Removing the boot
   # setting should not take the service down under someone who is using it.
   sudo systemctl disable "$UNIT_NAME" >/dev/null 2>&1 || true
   sudo rm -f "$UNIT_DEST"
   sudo systemctl daemon-reload
-  info "Unit removed. The drive is untouched; Docker's restart policy still applies."
+  info "Unit removed. The stack is untouched; Docker's restart policy still applies."
 }
 
 cmd_on() {
@@ -147,13 +147,13 @@ cmd_off() {
     # --now runs ExecStop, which stops the containers. That second part is not
     # cosmetic: `restart: unless-stopped` restores any container that is still
     # in the running state when the daemon starts, so leaving them up would make
-    # the drive come back at the next boot and the switch look broken.
+    # the stack come back at the next boot and the switch look broken.
     sudo systemctl disable --now "$UNIT_NAME"
   else
     warn "The unit is not installed; stopping the containers directly."
     cmd_stop
   fi
-  info "Autostart is OFF — the drive will stay down until you start it again."
+  info "Autostart is OFF — the stack will stay down until you start it again."
 }
 
 cmd_status() {
@@ -182,14 +182,14 @@ cmd_status() {
   echo ""
 
   if [[ "$enabled" == "enabled" ]]; then
-    echo "The drive will start on boot."
+    echo "The stack will start on boot."
   elif [[ "$enabled" == "not installed" ]]; then
-    echo "No boot unit installed. The drive comes back after a reboot only if its"
+    echo "No boot unit installed. The stack comes back after a reboot only if its"
     echo "containers still exist and were left running — and not at all if the"
     echo "external drive mounts after Docker starts."
-    echo "Fix that with:  bash scripts/drive-autostart.sh on"
+    echo "Fix that with:  bash scripts/autostart.sh on"
   else
-    echo "Autostart is off. Turn it on with:  bash scripts/drive-autostart.sh on"
+    echo "Autostart is off. Turn it on with:  bash scripts/autostart.sh on"
   fi
 
   [[ "$running" -ne "$total" && "$running" -ne 0 ]] && \

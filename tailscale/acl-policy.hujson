@@ -1,4 +1,4 @@
-// PiHub / PiTune / Home Drive: shared tailnet ACL policy (template).
+// PiHub / Home Drive: shared tailnet ACL policy (template).
 //
 // This is NOT applied automatically. Tailscale ACLs live in the Tailscale
 // admin console (or are pushed via its API), not in this repo. Paste this
@@ -26,14 +26,18 @@
 //
 // ── One tag per SERVER, not one tag for everything ──────────────────────
 // Each Pi/stack advertises its own tag (tag:home-drive-server,
-// tag:pitune-server, tag:pihub-server) rather than a single shared
-// tag:home-server. Three separate ACL rules below, one per service, each
-// scoped to exactly the port(s) that service's own `tailscale serve`
-// answers on:
-//   - home-drive:  443 (FileBrowser + CouchDB), 8443 (CouchDB/Fauxton at
-//     the root, see home-drive/docs/TAILSCALE.md), 9443 (Nextcloud).
-//   - pitune:      443 only.
-//   - pihub:       443 only.
+// tag:pihub-server) rather than a single shared tag:home-server. Two
+// separate ACL rules below, one per service, each scoped to exactly the
+// port that service's own `tailscale serve` answers on:
+//   - home-drive: 443 only. home-drive is reachable directly on the LAN by
+//     default; this tag only matters if you also enable its optional
+//     `tailscale` compose profile, to reach it from outside the LAN.
+//   - pihub:      443 only. PiHub is a single stack covering all media
+//     streaming (music, movies, shows, photos), the home dashboard, and
+//     everything formerly reachable as a standalone PiTune. One tag and
+//     one port cover all of it, because PiHub's own nginx is the single
+//     thing `tailscale serve` proxies to; there is nothing behind it that
+//     needs its own tag.
 // This also means a device only needs to be granted the SPECIFIC service
 // rules it should reach. See "Scoping a device to one service" below.
 //
@@ -54,14 +58,13 @@
 // what actually delivers that property in practice.
 //
 // ── Scoping a device to one service only (e.g. a guest) ─────────────────
-// tag:approved-device below is granted all three services by default,
-// which is the common case for your own personal devices. To hand a
-// guest access to just PiTune's music and nothing else: add a second
-// device tag (e.g. tag:approved-device-pitune) to tagOwners, give it its
-// own single ACL rule against tag:pitune-server only, and tag their
-// device with that instead of tag:approved-device. Never add
-// tag:approved-device itself to a device you don't want full access for.
-// It is intentionally "all three, full stop".
+// tag:approved-device below is granted both services by default, which is
+// the common case for your own personal devices. To hand a guest access to
+// just PiHub's music and nothing else: add a second device tag (e.g.
+// tag:approved-device-pihub) to tagOwners, give it its own single ACL rule
+// against tag:pihub-server only, and tag their device with that instead of
+// tag:approved-device. Never add tag:approved-device itself to a device
+// you don't want full access for. It is intentionally "both, full stop".
 //
 // ── "Only 2 devices at once" ─────────────────────────────────────────────
 // Deliberately NOT implemented as a live concurrent-connection counter.
@@ -74,7 +77,6 @@
 {
 	"tagOwners": {
 		"tag:home-drive-server": ["REPLACE-ME-your-login@example.com"],
-		"tag:pitune-server":     ["REPLACE-ME-your-login@example.com"],
 		"tag:pihub-server":      ["REPLACE-ME-your-login@example.com"],
 		"tag:approved-device":   ["REPLACE-ME-your-login@example.com"],
 	},
@@ -83,12 +85,7 @@
 		{
 			"action": "accept",
 			"src":    ["tag:approved-device"],
-			"dst":    ["tag:home-drive-server:443", "tag:home-drive-server:8443", "tag:home-drive-server:9443"],
-		},
-		{
-			"action": "accept",
-			"src":    ["tag:approved-device"],
-			"dst":    ["tag:pitune-server:443"],
+			"dst":    ["tag:home-drive-server:443"],
 		},
 		{
 			"action": "accept",
