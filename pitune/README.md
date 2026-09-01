@@ -274,7 +274,11 @@ just in this repo:**
    to your tailnet's ACL (Tailscale admin console → Access Controls). Skip
    this and joining the tailnet exposes *every* open port on the Pi,
    including `NAVIDROME_PORT`, to any device on your tailnet, not just the
-   one path above.
+   one path above. See
+   [`../tailscale/docs/DEVICE-ONBOARDING.md`](../tailscale/docs/DEVICE-ONBOARDING.md)'s
+   "One-time tailnet setup" step 2 for the full click-by-click walkthrough
+   of that page, including what to do if this tailnet already has other
+   ACL rules you don't want to lose.
 2. Get a `TS_AUTHKEY` (prefer non-reusable, short expiry; see the comment
    in `.env.example` for why that's enough) and, ideally, turn on device
    approval so a new device can't reach anything until you've approved it.

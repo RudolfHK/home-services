@@ -53,8 +53,49 @@ catch and reject instead.
    device should show up in the Machines list as **waiting for approval**,
    not already connected. If a new device is immediately usable instead,
    the setting didn't take, so go back and re-check it before relying on it.
-2. **Access controls**: paste in `../acl-policy.hujson`, with your own
-   login substituted for every `REPLACE-ME-your-login@example.com`. Save.
+2. **Access controls**: this page holds your *entire* tailnet's policy in
+   one shared file, so applying `acl-policy.hujson` here replaces the
+   whole thing, not just an entry for this project. Walking through it:
+
+   1. Go to https://login.tailscale.com/admin/acls, or click **Access
+      controls** in the admin console's left sidebar. You'll see a text
+      editor pre-loaded with your tailnet's current policy, written in
+      HuJSON (JSON that also allows `//` comments and trailing commas).
+      You need to be the tailnet's owner or an admin to edit this page;
+      if it looks read-only, that's why.
+   2. **A brand-new tailnet** starts with a wide-open default policy,
+      typically just `{"acls": [{"action": "accept", "src": ["*"], "dst": ["*:*"]}]}`,
+      meaning every device can already reach every other device on every
+      port. That default is exactly what this setup replaces. If that's
+      all you see, select everything in the editor (Ctrl+A on
+      Windows/Linux, Cmd+A on Mac) and delete it.
+   3. **If you've customized this tailnet's ACLs before** for something
+      else sharing the tailnet, don't overwrite it blindly. Merge
+      `acl-policy.hujson`'s `tagOwners` entries and `acls` rules into
+      what's already there instead, so you don't accidentally lock
+      yourself out of something else you depend on.
+   4. Copy the full contents of [`../acl-policy.hujson`](../acl-policy.hujson)
+      from this repo and paste it into the editor, replacing whatever was
+      there (or merged in, per the step above).
+   5. Find every `REPLACE-ME-your-login@example.com` placeholder (there
+      are four, all inside the `tagOwners` block near the top) and
+      replace it with the email address you sign in to Tailscale with.
+      All four normally get the same address, since you're the one
+      approving devices for all three services; only use different
+      addresses if you specifically want different people to own
+      different tags.
+   6. Click **Save** in the editor. The console checks the HuJSON before
+      it lets the save through: a syntax error (an extra comma, a missing
+      brace) or an ACL rule referencing a tag that isn't defined in
+      `tagOwners` shows up as an inline error at the offending line, and
+      Save stays disabled until it's fixed. Pasting the file unmodified
+      shouldn't trigger this; it mainly matters if you hand-edit it
+      afterward.
+   7. A successful save shows a confirmation message and the editor now
+      reflects what's live immediately, no restart or redeploy needed on
+      your end. The page also keeps a revision history (look for a
+      history/clock icon near the editor) if you ever need to see an
+      earlier version or roll back.
 3. **Each Pi** running one of these stacks needs its own server tag:
    `tag:home-drive-server`, `tag:pitune-server`, or `tag:pihub-server`
    respectively (never the same tag for two different Pis). Set it via

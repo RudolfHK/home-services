@@ -78,7 +78,11 @@ intended `443`/`8443`/`9443`. Fix that before going further:
    into **Access controls** in the admin console (with your own login in
    place of every `REPLACE-ME-your-login@example.com`). It grants
    `tag:approved-device` access to `tag:home-drive-server` on exactly
-   `443`, `8443`, and `9443`, nothing else.
+   `443`, `8443`, and `9443`, nothing else. See
+   [`../../tailscale/docs/DEVICE-ONBOARDING.md`](../../tailscale/docs/DEVICE-ONBOARDING.md)'s
+   "One-time tailnet setup" step 2 for the full click-by-click walkthrough
+   of that page, including what to do if this tailnet already has other
+   ACL rules you don't want to lose.
 2. Make sure `TS_EXTRA_ARGS=--advertise-tags=tag:home-drive-server` is set
    in `.env` (see `.env.example`) *before* the first `tailscale up`. A
    node with no tag doesn't match that ACL rule at all and is denied by
