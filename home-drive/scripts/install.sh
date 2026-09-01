@@ -140,6 +140,20 @@ if ! mountpoint -q "$DATA_PATH"; then
   warn "continuing will store all data on the OS drive."
   confirm "Continue anyway? (only if DATA_PATH is intentionally on the OS/NVMe drive)" \
     || exit 1
+else
+  # Being A mount point isn't being the RIGHT one. Two drives can carry the
+  # exact same label (mount-drive.sh always labels ext4 "homedrive"), so
+  # after swapping drives it is entirely possible for an old, still-attached
+  # one to still be sitting on this mountpoint while a freshly mounted
+  # replacement sits unused elsewhere — everything below would then run
+  # perfectly correctly against the WRONG drive's old data, which looks
+  # nothing like a mount problem by the time it surfaces. Print what is
+  # actually here so that is obvious now, not after debugging the database.
+  DRIVE_SRC="$(findmnt -n -o SOURCE --target "$DATA_PATH" 2>/dev/null || true)"
+  DRIVE_LABEL="$(lsblk -no LABEL "$DRIVE_SRC" 2>/dev/null || true)"
+  DRIVE_UUID="$(lsblk -no UUID "$DRIVE_SRC" 2>/dev/null || true)"
+  info "${DATA_PATH} is backed by ${DRIVE_SRC:-<unknown>} (label: ${DRIVE_LABEL:-none}, UUID: ${DRIVE_UUID:-none})."
+  info "Just swapped drives? Confirm that is the one you meant — 'lsblk -f' lists every candidate."
 fi
 
 # ── 4. Work out the uids the images actually use ─────────────────────────────
