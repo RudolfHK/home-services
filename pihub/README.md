@@ -339,8 +339,13 @@ since both only ever read.
   codecs this way but cannot hardware-*encode*, so direct play is still
   strictly preferred; hardware transcoding is a fallback for the codecs it
   can't play directly, enabled from Jellyfin's own admin UI (**Dashboard →
-  Playback**, V4L2M2M). If those device paths don't exist on your board,
-  comment the whole block out; Jellyfin runs fine on software decoding.
+  Playback**, V4L2M2M). Those paths are not present on every board — Pi 5
+  included, depending on kernel and overlays — and Docker aborts the entire
+  `up` over a device it can't find, so `scripts/setup.sh` probes for them and
+  writes `JELLYFIN_V4L2_DEV10/11/12` into `.env` accordingly. Nothing to do
+  by hand: absent devices mean software decoding, which is fine. If your
+  board exposes a decoder under different numbers (`ls -l /dev/video*`), set
+  those variables yourself as `host:container` pairs.
 - **Idle RAM.** Core + PiTune + Jellyfin (idle, no active streams) should sit
   comfortably under the ~1.5GB target on an 4GB Pi 5; Jellyfin's own memory
   use grows mainly while actively transcoding.

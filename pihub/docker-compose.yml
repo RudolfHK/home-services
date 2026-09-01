@@ -404,16 +404,18 @@ services:
         bind:
           create_host_path: false
 
-    # V4L2 stateless decode devices — this is the standard device layout on
-    # Raspberry Pi OS's kernel (Pi 5 decodes; it does NOT hardware-encode, so
-    # this only ever helps as a fallback — direct play stays strictly
-    # preferred, see README.md). If these paths don't exist on your board
-    # (non-Pi hardware, or a kernel without V4L2 stateless codecs), comment
-    # this whole block out — Jellyfin still runs fine on software decoding.
+    # V4L2 stateless decode devices — the standard layout on Raspberry Pi OS's
+    # kernel (Pi 5 decodes; it does NOT hardware-encode, so this only ever
+    # helps as a fallback — direct play stays strictly preferred, see
+    # README.md). Docker treats a missing device as a fatal error and aborts
+    # the whole `up`, so each of these is a variable rather than a literal
+    # path: scripts/setup.sh probes the board and writes the real mapping
+    # when the node exists, leaving the harmless /dev/null:/dev/null default
+    # when it doesn't. Jellyfin runs fine on software decoding either way.
     devices:
-      - /dev/video10:/dev/video10
-      - /dev/video11:/dev/video11
-      - /dev/video12:/dev/video12
+      - ${JELLYFIN_V4L2_DEV10:-/dev/null:/dev/null}
+      - ${JELLYFIN_V4L2_DEV11:-/dev/null:/dev/null}
+      - ${JELLYFIN_V4L2_DEV12:-/dev/null:/dev/null}
 
     security_opt:
       - no-new-privileges:true
