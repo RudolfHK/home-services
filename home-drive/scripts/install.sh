@@ -257,8 +257,32 @@ never_installs() {
     && ! in_app test -f /var/www/html/config/apps.config.php
 }
 
+# The other first-run failure the installer cannot recover from on its own.
+#
+# Nextcloud's automatic install runs exactly once, at container start, and
+# does not retry itself later — a container that has been up for a while
+# with no config.php just means that one attempt already failed. The
+# specific way this happens: nextcloud-db's healthcheck can report healthy
+# a moment before the real server is actually listening on TCP (see its own
+# healthcheck comment in docker-compose.yml for the postgres-internal race
+# behind that), nextcloud-app starts right then, its one-shot install hits
+# "connection refused", and it gives up for good. occ then fails this exact
+# way forever after, even once the database is completely fine, because
+# nothing ever retries the install that would have written config.php.
+db_connection_failed() {
+  # Captured separately from the grep, not piped directly into it: occ
+  # itself always exits non-zero here (it's throwing), and with pipefail
+  # (already set at the top of this script) a direct `occ ... | grep -q`
+  # would report THAT exit code rather than grep's, regardless of whether
+  # grep actually matched — silently never firing this check at all.
+  local out
+  out="$(occ status 2>&1)" || true
+  printf '%s' "$out" | grep -q 'Failed to connect to the database'
+}
+
 info "Waiting for Nextcloud to finish installing (this can take several minutes)…"
 INSTALLED=false
+RETRIED_DB_INSTALL=false
 for _ in $(seq 1 120); do
   if occ status 2>/dev/null | grep -q 'installed: true'; then
     INSTALLED=true
@@ -284,6 +308,29 @@ for _ in $(seq 1 120); do
     sudo rm -rf ${DATA_PATH}/nextcloud/db/pgdata
     docker volume rm ${HTML_VOL:-<project>_nextcloud-html}
     bash scripts/install.sh"
+  fi
+  if db_connection_failed; then
+    if [[ "$RETRIED_DB_INSTALL" == "true" ]]; then
+      error "Nextcloud's automatic install still cannot reach the database after a retry.
+
+  This isn't the startup race the retry above was for — that only ever needed
+  one retry, since it means the database was briefly slow to come up, not
+  actually broken. Something else is wrong. Check the database directly:
+
+    docker compose logs --tail 50 nextcloud-db
+    docker exec homedrive-nextcloud-app env | grep -i postgres
+    docker exec homedrive-nextcloud-db psql -U ${NEXTCLOUD_DB_USER:-nextcloud} -d ${NEXTCLOUD_DB_NAME:-nextcloud} -c 'select 1;'
+
+  and re-run this script once that last command actually succeeds."
+    fi
+    warn "Nextcloud's one-shot automatic install could not reach the database — a"
+    warn "known startup race, not a real problem with the database itself (see"
+    warn "docker-compose.yml's nextcloud-db healthcheck comment). Restarting"
+    warn "nextcloud-app now that the database has had time to settle…"
+    "${COMPOSE[@]}" restart nextcloud-app nextcloud-cron >/dev/null
+    RETRIED_DB_INSTALL=true
+    sleep 10
+    continue
   fi
   sleep 5
 done

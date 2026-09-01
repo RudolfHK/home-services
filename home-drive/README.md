@@ -596,6 +596,47 @@ bash scripts/install.sh
 A healthy first run says `Initializing nextcloud <version> …`, then `New nextcloud instance`,
 and prints **no** `differs from the latest version` warnings at all.
 
+### `occ status` throws a database connection error, forever, even though Postgres is fine
+
+Symptom — `docker compose logs nextcloud-app` shows the automatic install failing with:
+
+```
+Doctrine\DBAL\Exception: Failed to connect to the database: An exception occurred in the
+driver: SQLSTATE[08006] [7] connection to server at "127.0.0.1", port 5432 failed:
+Connection refused
+```
+
+and every later `occ status` (even run by hand, minutes afterward, with `nextcloud-db`
+reporting `Healthy` and staying up fine) throws the exact same error. `docker exec
+homedrive-nextcloud-app env | grep -i postgres` shows `POSTGRES_HOST=nextcloud-db`, correct.
+
+Postgres's very first start on a brand-new `pgdata` runs a throwaway `initdb` server before
+the real one; that first server binds **only** the Unix socket, never TCP:
+
+```
+LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"   ← throwaway server
+LOG:  database system is shut down
+LOG:  listening on IPv4 address "0.0.0.0", port 5432                ← the real one, moments later
+```
+
+`nextcloud-db`'s healthcheck (`pg_isready`, no `-h`) checks the Unix socket, which the
+throwaway server also answers — so it can report `healthy` a moment before the real server
+is the one actually listening on TCP. `nextcloud-app` starts right then, its one-shot
+automatic install (env vars are only ever read during this one attempt, to write
+`config.php`) hits `connection refused` on the network, and gives up. No later `docker exec
+occ` call ever gets a different answer, because the install that would have written
+`config.php` never happens again on its own — the entrypoint runs it exactly once, at
+container start, not on every command.
+
+`docker-compose.yml`'s `nextcloud-db` healthcheck now forces `pg_isready -h 127.0.0.1`,
+specifically to fail during the throwaway-server window (TCP-only, never socket-only) so
+this can't happen on a fresh install anymore. If you hit this anyway, `install.sh` detects
+it directly (distinct from the message above — same section, different cause) and retries
+by restarting `nextcloud-app` once the database has had time to settle, since the fix really
+is just retrying the one-shot install after the real server is up. If it still fails after
+that automatic retry, something else is wrong with the database itself; the error names
+the exact commands to check that directly.
+
 ### Tailscale profile: everything is healthy but nothing answers on port 443
 
 Almost always a bad `serve.json`. `containerboot` expands **only** `${TS_CERT_DOMAIN}` in

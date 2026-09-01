@@ -75,7 +75,19 @@ services:
       - no-new-privileges:true
 
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${NEXTCLOUD_DB_USER:-nextcloud} -d ${NEXTCLOUD_DB_NAME:-nextcloud}"]
+      # `-h 127.0.0.1` forces this over TCP rather than the default Unix
+      # socket, and that's load-bearing, not cosmetic. A brand-new PGDATA
+      # goes through a throwaway `initdb` server before the real one: that
+      # first server binds ONLY the Unix socket, never TCP, and a socket-only
+      # `pg_isready` (no -h) reports healthy during that window. nextcloud-app
+      # depends on this container being service_healthy and then connects
+      # over TCP (this network has no sockets to share), so a premature
+      # "healthy" here meant it started, hit "connection refused", spent its
+      # own limited internal retries, and gave up — writing no config.php,
+      # forever, since Nextcloud's automatic install runs exactly once per
+      # container start. Testing TCP specifically means this only reports
+      # healthy once the REAL server is the one answering.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${NEXTCLOUD_DB_USER:-nextcloud} -d ${NEXTCLOUD_DB_NAME:-nextcloud}"]
       interval: 30s
       timeout: 5s
       retries: 5
