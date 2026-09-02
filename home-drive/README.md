@@ -550,6 +550,37 @@ If `nextcloud-web` shows healthy but nothing answers, check `NEXTCLOUD_PORT` in 
 actually matches what you're requesting, and that a firewall rule (step 6 above) isn't
 blocking it from the device you're testing on.
 
+### Browser can't find `homepi.local`, or switching to the IP gives "untrusted domain"
+
+Two separate problems, usually hit back to back:
+
+**The Pi answers on its IP, but not on `homepi.local`, from one particular device.**
+This is mDNS name resolution failing on the *client*, not the Pi. Avahi on the Pi is
+advertising the name correctly either way; whether a given device can look it up depends
+on that device's own network stack, and it is notoriously unreliable from Windows in
+particular. This is not something this repo can fix from the server side. Find the Pi's
+LAN IP (`hostname -I` on the Pi, or check your router's DHCP leases) and use that instead,
+or install Bonjour Print Services / iTunes on the Windows machine, both of which include
+an mDNS resolver as a side effect.
+
+**Switching to the IP then fails with "Access through untrusted domain" /
+"Zugriff über eine nicht vertrauenswürdige Domain".** `NEXTCLOUD_TRUSTED_DOMAINS`
+(built from `NEXTCLOUD_LAN_HOSTNAME` in `.env`) is only ever read once, during the very
+first install, same as the database credentials; see the AUTOCONFIG note on
+`NEXTCLOUD_LAN_HOSTNAME` in `.env.example`. If you only ever reach the box by the hostname
+you installed with, its IP was never added, so Nextcloud rejects it as an address it
+doesn't recognize. Add it after the fact:
+
+```bash
+docker exec -u www-data homedrive-nextcloud-app php occ config:system:get trusted_domains
+# note the next free index N, then:
+docker exec -u www-data homedrive-nextcloud-app php occ config:system:set trusted_domains N --value=192.168.1.50
+```
+
+Repeat for every hostname or IP you actually use to reach the box. Doing this now for both
+the hostname and the IP (`.env.example` suggests listing both, space-separated, before you
+ever run `install.sh`) avoids hitting this a second time later.
+
 ### `install.sh` times out and `status.php` answers 500 forever
 
 Symptom — `install.sh` gives up with *"Nextcloud did not report 'installed: true' within
