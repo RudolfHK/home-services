@@ -350,6 +350,17 @@
 
   document.getElementById("library-retry").addEventListener("click", initLibrary);
 
+  // The one way back to the login form from this screen without clearing
+  // site data by hand: Subsonic.call()'s authFailed flag only fires for
+  // Subsonic error codes 40/41, so a wrong password that comes back some
+  // other way (or any other misconfiguration) leaves the saved-but-bad
+  // credentials in place forever, with Retry just re-trying the same ones.
+  document.getElementById("library-use-different-account").addEventListener("click", () => {
+    Subsonic.clear();
+    document.getElementById("library-connection-error").classList.add("hidden");
+    document.getElementById("library-login").classList.remove("hidden");
+  });
+
   function renderBreadcrumbs() {
     const el = document.getElementById("library-breadcrumbs");
     el.innerHTML = "";
