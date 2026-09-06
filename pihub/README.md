@@ -548,6 +548,17 @@ wrong-password response.
 Make sure you're running the `pihub` script from this checkout (or via the
 symlink described above); it needs `docker-compose.yml` next to it.
 
+**`setup.sh` fails with `mkdir: cannot create directory ... Permission
+denied`, once per subfolder.** `MEDIA_ROOT` was created with `sudo mkdir`,
+leaving it root-owned; `setup.sh` itself runs as your normal user, not
+root, so it can't write into it. Fix ownership and re-run (no `sudo` needed
+for `setup.sh` itself):
+
+```bash
+sudo chown $(id -u):$(id -g) /mnt/data/pihub
+bash scripts/setup.sh
+```
+
 ## Future services
 
 Adding a service (Immich, Pi-hole, Uptime Kuma, Mealie, Home Assistant, ...)

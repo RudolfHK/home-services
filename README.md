@@ -159,7 +159,11 @@ bash scripts/setup.sh
 
 When it asks for a **media storage path**, give it a plain folder that is
 **not** inside Nextcloud, e.g. `/mnt/data/pihub`, creating it first if it
-doesn't exist (`sudo mkdir -p /mnt/data/pihub`). This becomes `MEDIA_ROOT`.
+doesn't exist (`mkdir -p /mnt/data/pihub`, **without** `sudo`: `/mnt/data`
+is already owned by your user, courtesy of `mount-drive.sh`'s `chown`, and
+`setup.sh` writes into `MEDIA_ROOT` as that same user, not as root; a
+`sudo mkdir` here creates a root-owned folder that its own next step then
+can't write into). This becomes `MEDIA_ROOT`.
 Once step 3b below redirects `music/videos/shows/photos` elsewhere, the
 setup wizard's own subfolders of those four names under it end up unused,
 which is harmless; `downloads/`, `backups/`, and, deliberately, `movies/`

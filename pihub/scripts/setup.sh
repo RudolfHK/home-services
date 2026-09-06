@@ -76,6 +76,19 @@ if [ ! -d "$media_root" ]; then
   exit 1
 fi
 
+# Created by hand with `sudo mkdir` before this script ever ran, most often
+# by someone following the root README literally, which leaves it root-owned
+# while this script (correctly) runs as the invoking user, not root, so
+# every mkdir below would otherwise fail one by one with a bare "Permission
+# denied" and no indication why. Catch it once, with the actual fix.
+if [ ! -w "$media_root" ]; then
+  echo "ERROR: $media_root exists but isn't writable by $(whoami)." >&2
+  echo "       It was likely created with 'sudo mkdir', leaving it root-owned." >&2
+  echo "       Fix ownership, then re-run (no sudo needed for this script):" >&2
+  echo "         sudo chown $(id -u):$(id -g) $media_root" >&2
+  exit 1
+fi
+
 # ── 3. Create the folder structure ──────────────────────────────────────
 # This wizard only ever sets up the plain-MEDIA_ROOT layout. If you want
 # music/videos/shows/photos to live inside home-drive's Nextcloud instead
