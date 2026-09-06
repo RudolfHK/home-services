@@ -198,6 +198,27 @@ case "$found" in
      echo "  through the ones that exist. Check 'ls -l /dev/video*' if that's a surprise." ;;
 esac
 
+# ── 4c. Check PIHUB_PORT isn't already taken ─────────────────────────────
+# Both this repo's stacks default to port 80 (home-drive's NEXTCLOUD_PORT
+# and this one), and the root README's combined single-Pi walkthrough runs
+# home-drive first, so on that exact path, port 80 is already claimed by
+# Nextcloud's nginx by the time this script gets here. `docker compose up`
+# would fail on it too, but buried in a generic "port is already allocated"
+# error with no hint of WHOSE port it is; checking here, against Docker's
+# own view of published ports rather than `ss`/`netstat` (not guaranteed
+# installed), catches it before the pull step and names the culprit.
+pihub_port="$(env_value PIHUB_PORT)"; pihub_port="${pihub_port:-80}"
+holder="$(docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null \
+  | grep -E "(^|[^0-9])${pihub_port}->" | grep -v '^pihub-nginx ' || true)"
+if [ -n "$holder" ]; then
+  echo "ERROR: port $pihub_port is already published by another container:" >&2
+  echo "  $holder" >&2
+  echo "       Running home-drive's Nextcloud on this same Pi? It defaults to" >&2
+  echo "       this same port. Set PIHUB_PORT to something else in .env (e.g." >&2
+  echo "       PIHUB_PORT=8080), then re-run this script." >&2
+  exit 1
+fi
+
 # ── 5. Pull images ──────────────────────────────────────────────────────
 echo
 echo "Pulling images (this can take a while on a Pi's network/SD card)..."

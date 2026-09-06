@@ -157,6 +157,13 @@ cd ~/home-services/pihub
 bash scripts/setup.sh
 ```
 
+Both stacks default to port 80 (home-drive's `NEXTCLOUD_PORT` above and
+this one's `PIHUB_PORT`), so on this exact combined-Pi path, port 80 is
+already home-drive's by the time you get here. `setup.sh` catches the
+collision before starting anything and stops with the fix: edit
+`PIHUB_PORT` in the `.env` it just wrote (e.g. `PIHUB_PORT=8080`), then
+re-run it (safe to re-run; it keeps the `.env` you already have).
+
 When it asks for a **media storage path**, give it a plain folder that is
 **not** inside Nextcloud, e.g. `/mnt/data/pihub`, creating it first if it
 doesn't exist (`mkdir -p /mnt/data/pihub`, **without** `sudo`: `/mnt/data`

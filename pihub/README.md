@@ -220,7 +220,7 @@ pihub start tailscale     # optional — see Remote access via Tailscale
 | `COMPOSE_PROFILES` | `core,homepage,pitune,jellyfin` | Which products a bare `docker compose up -d` brings up. Narrowing this doesn't limit `pihub`; see `pihub`'s `compose()` wrapper. |
 | `MEDIA_ROOT` | `/media/storage` | The external drive. `setup.sh` creates `music/ (with music/YouTube/) videos/ movies/ shows/ photos/ downloads/ backups/` under it. |
 | `NAVIDROME_DATA_PATH` / `JELLYFIN_CONFIG_PATH` | `./navidrome/data` / `./jellyfin/config` | Per-service config, deliberately off `MEDIA_ROOT`, since a missing media drive must never take a service's own config down with it. |
-| `PIHUB_PORT` | `80` | The one port for daily use. |
+| `PIHUB_PORT` | `80` | The one port for daily use. If home-drive's Nextcloud also runs on this Pi, it defaults to this same port; `setup.sh` refuses to start with a clear message if something else already holds it, so set this to e.g. `8080` first. |
 | `NAVIDROME_PORT` / `JELLYFIN_PORT` | `4533` / `8096` | Published directly too: Navidrome for its one-time admin/account setup, Jellyfin for its setup wizard and for troubleshooting hardware transcoding without the proxy in the way. |
 | `PUID` / `PGID` | `1000`/`1000` | uid/gid Navidrome runs as, so it can read `MEDIA_ROOT`. |
 | `MEDIA_LIBRARY_ROOT` | unset (falls back to `MEDIA_ROOT`) | Redirects only `music/videos/shows/photos` (never `movies/`, which routinely exceeds 50GB per file and always stays under `MEDIA_ROOT`) to a different parent directory, e.g. a folder inside home-drive's Nextcloud. See [Mounting a Nextcloud folder as your media library](#mounting-a-nextcloud-folder-as-your-media-library-optional) below. |
@@ -522,6 +522,15 @@ hides the original client's IP at that layer (see the comment above
 `limit_conn_zone` in that file).
 
 ## Troubleshooting
+
+**Browsing `http://<pi-ip>/` shows Nextcloud, not PiHub's dashboard.**
+`PIHUB_PORT` and home-drive's `NEXTCLOUD_PORT` both default to 80; if
+both stacks run on the same Pi, whichever came up first keeps the port
+and the other's nginx never binds. `setup.sh` now refuses to start with
+a clear message when this happens, but if you're hitting it after the
+fact: set `PIHUB_PORT` to something else (e.g. `8080`) in `.env`, then
+`docker compose up -d nginx`. PiHub becomes reachable at
+`http://<pi-ip>:8080/`.
 
 **A product shows "not found" on the dashboard.** Its container was never
 created, almost always because `MEDIA_ROOT` (or one of its subfolders) was
