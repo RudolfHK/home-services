@@ -88,7 +88,13 @@
     url(endpoint, extra) {
       const params = this.authParams();
       Object.entries(extra || {}).forEach(([k, v]) => params.set(k, v));
-      return `/rest/${endpoint}.view?${params.toString()}`;
+      // Relative, not "/rest/...": this page is reached through PiHub's
+      // central nginx at /pitune/, and a leading slash resolves against the
+      // ORIGIN root instead, landing on homepage's catch-all location / and
+      // 404ing there instead of reaching Navidrome at all; the browser
+      // resolves an absolute path against the origin, ignoring what path
+      // the page itself was actually served from.
+      return `rest/${endpoint}.view?${params.toString()}`;
     },
     streamUrl(id) { return this.url("stream", { id }); },
     coverArtUrl(id) { return this.url("getCoverArt", { id, size: 100 }); },
@@ -254,7 +260,7 @@
     try {
       const headers = {};
       if (window.PIHUB_API_TOKEN) headers["X-PiHub-Token"] = window.PIHUB_API_TOKEN;
-      const res = await fetch(`/api/save/${track.videoId}`, { method: "POST", headers });
+      const res = await fetch(`api/save/${track.videoId}`, { method: "POST", headers });
       if (!res.ok && res.status !== 403) {
         console.warn("Auto-save to library failed:", await res.text());
       }
@@ -446,7 +452,7 @@
     list.appendChild(loading);
 
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+      const res = await fetch(`api/search?q=${encodeURIComponent(q)}`);
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       list.innerHTML = "";
@@ -464,7 +470,7 @@
           title: r.title,
           sub: r.artist,
           durationText: r.duration ? formatTime(r.duration) : "",
-          onClick: () => enqueue({ title: r.title, artist: r.artist, src: `/api/stream/${r.id}`, source: "youtube", videoId: r.id }),
+          onClick: () => enqueue({ title: r.title, artist: r.artist, src: `api/stream/${r.id}`, source: "youtube", videoId: r.id }),
         }));
       });
     } catch (err) {
