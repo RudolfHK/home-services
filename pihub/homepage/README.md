@@ -123,7 +123,7 @@ services:
     name: PiTune
     description: Local music library + YouTube audio streaming
     icon: music
-    containers: [navidrome, pitune-backend, pitune-frontend]   # all 3 = one card
+    containers: [pihub-navidrome, pihub-pitune-backend, pihub-pitune-frontend]   # all 3 = one card
     health_url: http://navidrome:4533   # Docker-network address, NOT localhost
     health_endpoint: /
     launch_url: /pitune/                # what the "Open" button opens
@@ -131,8 +131,16 @@ services:
 
 `containers` is a list on purpose: PiTune is three containers that PiHub
 treats as one product everywhere else (the CLI, the old management-api,
-and now here). `compose_service: jellyfin` is just shorthand for
-`containers: [jellyfin]` when a product really is one container.
+and now here). `compose_service: pihub-jellyfin` is just shorthand for
+`containers: [pihub-jellyfin]` when a product really is one container.
+Both fields take the container's actual `container_name` from
+`docker-compose.yml`, not its compose service key; those differ here
+(every service sets an explicit `container_name`), and `health_url` right
+above is the one field in this example that correctly *does* use the
+service key instead, since that's what Docker's own embedded DNS resolves
+on the compose network. Mixing the two up is the single easiest way to
+break this file: a container name that's off by that prefix 404s against
+docker-proxy for every status/start/stop/logs call.
 
 **`health_url` is not `launch_url`.** `health_url` is how *this backend*
 reaches the service directly over the Docker compose network (a service
