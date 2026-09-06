@@ -168,6 +168,25 @@ by `backend/monitor.py`:
   or `NAVIDROME_MONITOR_USER`/`NAVIDROME_MONITOR_PASSWORD` unset just
   reports that half as "not configured" instead of failing.
 
+Setting `NAVIDROME_MONITOR_USER`/`NAVIDROME_MONITOR_PASSWORD` in `.env`
+does not by itself create anything: Navidrome keeps its own user
+database, entirely separate from this stack's `.env`, so those values
+are only what `monitor.py` will *try* when it calls Navidrome's
+Subsonic API. Log in to Navidrome would fail "unauthorized" with them
+until a matching account actually exists there. To set one up:
+
+1. Log in to Navidrome at `http://<pi-ip>:4533/` as an admin (your
+   first-ever Navidrome account, from the Quick start's manual steps,
+   is automatically one).
+2. **Settings → Users → Create User.** Give it a username and password
+   matching what you put (or will put) in `.env` exactly, and leave
+   **Admin** unchecked: this account only ever calls
+   `getNowPlaying.view`, so it doesn't need more than that.
+3. Put those same values in `NAVIDROME_MONITOR_USER`/
+   `NAVIDROME_MONITOR_PASSWORD` in `.env`, then restart the container
+   that reads them: `./pihub restart homepage` (a plain `.env` edit
+   doesn't reach an already-running container).
+
 `LIBRARY_PATH` (the file-activity scan target) tracks `MEDIA_LIBRARY_ROOT`
 when set, unlike `MEDIA_PATH` (used for drive-capacity stats), which is
 always the physical `MEDIA_ROOT` mount; see `../README.md`'s "Mounting a

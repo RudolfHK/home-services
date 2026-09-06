@@ -219,8 +219,12 @@ docker compose up -d
 
 ### 3c. One-time manual steps
 
-1. Open `http://<pi-ip>:4533/` and create your first Navidrome user.
-   PiTune's own Library tab logs in with that account.
+1. Open `http://<pi-ip>:4533/` and create your first Navidrome user (this
+   one becomes Navidrome's admin, since it's the first account ever
+   created). PiTune's own Library tab logs in with that account. This is
+   separate from `NAVIDROME_MONITOR_USER` in step 3 below: setting that in
+   `.env` doesn't create a Navidrome account by itself, so signing in with
+   it here fails "unauthorized" until you also create it inside Navidrome.
 2. Open `http://<pi-ip>:8096/`, run Jellyfin's setup wizard, and add four
    libraries pointing at the container paths `/media/videos`,
    `/media/movies`, `/media/shows` (Movies/Shows/general video types) and
