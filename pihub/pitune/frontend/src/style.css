@@ -47,6 +47,44 @@ input[type="text"], input[type="search"], input[type="password"] {
 
 .hidden { display: none !important; }
 
+/* ── App lock (pre-login gate) ──────────────────────────────────────── */
+.app-lock {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+
+/* ── Modal (playlist create / add-to-playlist) ──────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+}
+.modal-box {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25em;
+  width: min(360px, 90vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75em;
+}
+.modal-box h3 { margin: 0; }
+.modal-box .item-list { max-height: 40vh; overflow-y: auto; }
+.playlist-modal-create { display: flex; gap: 0.5em; }
+.playlist-modal-create input { flex: 1; }
+.modal-close { align-self: flex-start; }
+
 /* ── Top bar ─────────────────────────────────────────────────────────── */
 .topbar {
   display: flex;
@@ -81,6 +119,15 @@ main {
 }
 .login-box .hint { color: var(--text-dim); font-size: 0.85em; }
 
+.discover-placeholder {
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+}
+.discover-placeholder .hint { color: var(--text-dim); font-size: 0.85em; }
+.discover-placeholder button:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .breadcrumbs {
   display: flex;
   gap: 0.4em;
@@ -90,6 +137,26 @@ main {
   flex-wrap: wrap;
 }
 .breadcrumbs button { padding: 0.2em 0.5em; font-size: 0.9em; }
+
+.browser { display: flex; gap: 1.25em; align-items: flex-start; }
+.library-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+  flex-shrink: 0;
+  width: 150px;
+}
+.library-nav-btn {
+  text-align: left;
+  border-color: transparent;
+  background: transparent;
+}
+.library-nav-btn.active { background: var(--bg-elevated); color: var(--accent); border-color: var(--border); }
+.library-content { flex: 1; min-width: 0; }
+.library-section-hint { color: var(--text-dim); font-size: 0.85em; margin-bottom: 0.75em; }
+.library-action-row { padding: 0.3em 0.5em 0.75em; }
+.library-load-more { display: block; width: 100%; margin-top: 0.75em; }
+.library-load-more:disabled { opacity: 0.6; cursor: default; }
 
 .item-list {
   list-style: none;
@@ -138,7 +205,25 @@ main {
 }
 .item-sub { color: var(--text-dim); font-size: 0.85em; }
 .item-duration { color: var(--text-dim); font-size: 0.85em; flex-shrink: 0; }
-.item-remove { flex-shrink: 0; }
+.item-action { flex-shrink: 0; }
+.item-queue, .item-save, .item-star, .item-playlist-add { font-size: 1.1em; line-height: 1; }
+.item-star { color: var(--text-dim); }
+.item-star.starred { color: var(--accent); border-color: var(--accent); }
+.item-drag-handle {
+  cursor: grab;
+  /* Without this, a touchscreen treats the same gesture as "scroll the
+     page" and either fights the drag or hijacks it entirely; this is
+     what actually lets the Pointer Events handlers in app.js see the
+     gesture at all on a phone. */
+  touch-action: none;
+}
+.item-row.dragging { opacity: 0.5; }
+.save-progress {
+  width: 60px;
+  height: 6px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
 
 /* ── Player bar ──────────────────────────────────────────────────────── */
 .player-bar {
@@ -158,6 +243,11 @@ main {
 .now-playing { min-width: 0; flex: 1 1 160px; }
 .track-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .track-artist { color: var(--text-dim); font-size: 0.85em; }
+.now-playing.loading .track-title { animation: np-loading-pulse 1.2s ease-in-out infinite; }
+@keyframes np-loading-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
 
 .transport { display: flex; gap: 0.4em; flex-shrink: 0; }
 .transport button { min-width: 2.4em; }
@@ -180,4 +270,6 @@ main {
   .player-bar { flex-direction: column; align-items: stretch; gap: 0.5em; }
   .progress, .volume { flex: 1 1 auto; }
   .topbar { gap: 0.75em; }
+  .browser { flex-direction: column; }
+  .library-sidebar { flex-direction: row; flex-wrap: wrap; width: auto; }
 }

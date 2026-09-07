@@ -36,6 +36,8 @@
       <h2>Updates</h2>
       <button id="check-updates">Check for updates</button>
       <div class="updates-list" id="updates-list"></div>
+      <h2>PiMonitor</h2>
+      <button id="open-monitor">Pi &amp; drive stats</button>
     </aside>
   </main>
 
@@ -46,6 +48,33 @@
         <button id="log-modal-close">✕</button>
       </div>
       <pre class="modal-body" id="log-modal-body"></pre>
+    </div>
+  </div>
+
+  <div id="monitor-modal" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <span>PiMonitor</span>
+        <button id="monitor-modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <section id="monitor-drive">
+          <h3>Mounted drive</h3>
+          <p>Loading…</p>
+        </section>
+
+        <section id="monitor-advanced">
+          <h3>Advanced</h3>
+          <p class="hint">File activity and current playback. Reads the whole media library, so
+            this is a manual, on-demand action rather than something polled automatically.</p>
+          <div class="monitor-advanced-actions">
+            <button id="monitor-load-files">Load file activity</button>
+            <button id="monitor-load-users">Load user activity</button>
+          </div>
+          <div id="monitor-file-activity"></div>
+          <div id="monitor-user-activity"></div>
+        </section>
+      </div>
     </div>
   </div>
 

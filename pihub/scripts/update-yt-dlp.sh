@@ -15,6 +15,14 @@ echo "Rebuilding pitune-backend with the latest yt-dlp..."
 docker compose build --pull --no-cache pitune-backend
 docker compose up -d pitune-backend
 
+# pitune-frontend's own nginx proxies /api/ to pitune-backend by hostname; a
+# fresh container above means a new IP, and nginx only resolves that
+# hostname once, at its own startup. It re-resolves within 10s on its own
+# now (see pitune/frontend/nginx.conf's resolver), but restarting it here
+# avoids even that brief window of stale-upstream errors right after an
+# update.
+docker compose restart pitune-frontend
+
 echo
 echo "Now running:"
 docker compose exec pitune-backend yt-dlp --version

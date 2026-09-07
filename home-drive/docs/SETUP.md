@@ -107,8 +107,9 @@ docker compose version
 
 ## 5. Configure UFW Firewall
 
-Since nothing is exposed to the internet (all access is through Tailscale), keep the
-firewall minimal: allow LAN SSH and the Tailscale interface.
+Home Drive is reachable directly on the LAN, so the firewall's job is to keep it off
+everything else: allow LAN SSH and LAN access to Nextcloud's port, deny everything else
+incoming.
 
 ```bash
 sudo apt-get install -y ufw fail2ban
@@ -117,16 +118,25 @@ sudo apt-get install -y ufw fail2ban
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
 
-# Allow SSH from your local network only (adjust subnet as needed)
-sudo ufw allow from 192.168.1.0/24 to any port 22 proto tcp
+# Find YOUR LAN subnet first. Do not copy the example below verbatim; allowing
+# the wrong subnet and then enabling ufw locks you out of SSH.
+ip -br -4 addr show eth0        # e.g. 192.168.1.59/24 → use 192.168.1.0/24
+LAN=192.168.1.0/24              # <- change this to match
 
-# Allow all traffic on the Tailscale interface (tailscale0)
-sudo ufw allow in on tailscale0
+# Allow SSH and Nextcloud (NEXTCLOUD_PORT) from your local network only
+sudo ufw allow from "$LAN" to any port 22 proto tcp
+sudo ufw allow from "$LAN" to any port 80 proto tcp
 
 # Enable the firewall
 sudo ufw enable
 sudo ufw status verbose
 ```
+
+If you also enable the optional `tailscale` profile, do **not** add
+`ufw allow in on tailscale0`: Tailscale runs *inside a container* in this stack, so
+`tailscale0` exists only in that container's network namespace, not on the host. There is no
+such interface for UFW to match, and tailnet traffic reaches the container as
+conntrack-established return traffic on the Docker bridge, which UFW already permits.
 
 ### fail2ban (brute-force SSH protection)
 
@@ -174,7 +184,8 @@ cd ~/home-services/home-drive
 
 # Copy and edit the environment file
 cp .env.example .env
-nano .env   # fill in TS_AUTHKEY, passwords, DATA_PATH, etc.
+chmod 600 .env
+nano .env   # fill in NEXTCLOUD_LAN_HOSTNAME, passwords, DATA_PATH, etc.
 
 # Run the install script
 bash scripts/install.sh
@@ -189,12 +200,12 @@ bash scripts/install.sh
 docker compose ps
 
 # View logs for a service
-docker compose logs -f tailscale
-docker compose logs -f filebrowser
-docker compose logs -f couchdb
+docker compose logs -f nextcloud-app
+docker compose logs -f nextcloud-web
+docker compose logs -f nextcloud-db
 
 # Restart a single service
-docker compose restart couchdb
+docker compose restart nextcloud-app
 
 # Stop everything
 docker compose down

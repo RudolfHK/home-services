@@ -5,6 +5,3 @@
 data/
 *.log
 .DS_Store
-
-# The FileBrowser SQLite database lives under ${DATA_PATH}, never in the repo.
-*.db

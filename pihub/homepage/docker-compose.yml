@@ -48,7 +48,7 @@ services:
       # explicit requirement. Comment it out if you'd rather not.
       - /:/hostroot:ro
       - ./config:/app/config
-      - ${MEDIA_ROOT:-/media/storage}:/media:ro
+      - ${MEDIA_ROOT:-/mnt/data/pihub}:/media:ro
 
     security_opt:
       - no-new-privileges:true

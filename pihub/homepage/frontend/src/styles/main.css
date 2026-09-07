@@ -184,6 +184,17 @@ button:disabled { opacity: 0.5; cursor: default; }
   font-size: 0.8em;
 }
 
+/* ── PiMonitor modal ─────────────────────────────────────────────────── */
+#monitor-modal .modal-box { max-width: 560px; }
+#monitor-modal .modal-body { white-space: normal; font-size: 0.9em; }
+#monitor-modal h3 { margin: 0 0 0.4em; font-size: 1em; }
+#monitor-modal h4 { margin: 0.8em 0 0.3em; font-size: 0.9em; color: var(--text-dim); }
+#monitor-modal ul { margin: 0; padding-left: 1.2em; }
+#monitor-modal li { margin-bottom: 0.2em; word-break: break-word; }
+#monitor-advanced { margin-top: 1.2em; padding-top: 1em; border-top: 1px solid var(--border); }
+.monitor-advanced-actions { display: flex; gap: 0.5em; margin: 0.5em 0; }
+.hint { color: var(--text-dim); font-size: 0.85em; }
+
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; }
 }

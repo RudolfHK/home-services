@@ -1,0 +1,4 @@
+// Templated at container start (see ../docker-entrypoint.d/) into config.js,
+// loaded by index.html before app.js. Not committed as config.js itself: the
+// real value comes from .env's API_TOKEN, different on every install.
+window.PIHUB_API_TOKEN = "${API_TOKEN}";

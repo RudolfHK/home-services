@@ -90,6 +90,16 @@ services:
       # so docker_monitor.py needed no code change for this. See
       # docker-proxy's own comment above for what it does and doesn't allow.
       DOCKER_HOST: tcp://docker-proxy:2375
+      # PiMonitor (see homepage/backend/monitor.py). LIBRARY_PATH is the
+      # actual active library root (honors MEDIA_LIBRARY_ROOT), separate
+      # from MEDIA_PATH above which is always the physical MEDIA_ROOT
+      # mount, used for drive-capacity stats specifically.
+      LIBRARY_PATH: /library
+      JELLYFIN_URL: http://jellyfin:8096
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:-}
+      NAVIDROME_URL: http://navidrome:4533
+      NAVIDROME_MONITOR_USER: ${NAVIDROME_MONITOR_USER:-}
+      NAVIDROME_MONITOR_PASSWORD: ${NAVIDROME_MONITOR_PASSWORD:-}
 
     depends_on:
       - docker-proxy
@@ -107,6 +117,16 @@ services:
       - type: bind
         source: ${MEDIA_ROOT}
         target: /media
+        read_only: true
+        bind:
+          create_host_path: false
+      # PiMonitor's file-activity scan reads this; not the same path as
+      # /media above when MEDIA_LIBRARY_ROOT redirects the library
+      # elsewhere (e.g. into home-drive's Nextcloud). Read-only, and a walk
+      # + stat() never reads file contents, same reasoning as /hostroot.
+      - type: bind
+        source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}
+        target: /library
         read_only: true
         bind:
           create_host_path: false
@@ -203,6 +223,14 @@ services:
     logging: *default-logging
 
     user: "${PUID}:${PGID}"
+    # Supplementary group, on top of PUID:PGID above, a no-op at the "0"
+    # default. Only matters if MEDIA_LIBRARY_ROOT (below) is set to a
+    # directory owned by some other uid/gid this container isn't already
+    # part of, e.g. a folder inside home-drive's Nextcloud data directory.
+    # See .env.example's MEDIA_GID comment and README.md's "Mounting a
+    # Nextcloud folder as your media library" section.
+    group_add:
+      - "${MEDIA_GID:-0}"
 
     # Published directly (not just reverse-proxied) so you can reach
     # Navidrome's own admin UI to create the account PiTune's Library tab
@@ -219,19 +247,16 @@ services:
       TZ: ${TZ}
 
     volumes:
+      # MEDIA_LIBRARY_ROOT, when set, redirects only this, never downloads/,
+      # photos/ or backups/, which stay under MEDIA_ROOT always. See
+      # README.md's "Mounting a Nextcloud folder as your media library".
+      # Read-only here; pitune-backend below has its own separate, narrower,
+      # read-write mount of just the music/YouTube subfolder inside this
+      # same tree, so Navidrome's own scan picks up saved tracks without
+      # this container ever being given write access itself.
       - type: bind
-        source: ${MEDIA_ROOT}/music
+        source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/music
         target: /music
-        read_only: true
-        bind:
-          create_host_path: false
-      # Read-only: this is PiTune's yt-dlp downloads folder, not the curated
-      # library. Add it as a SECOND library from Navidrome's admin UI
-      # (Settings → Libraries) if you want saved YouTube tracks to show up —
-      # see pihub/pitune/backend/app/main.py.
-      - type: bind
-        source: ${MEDIA_ROOT}/downloads
-        target: /downloads
         read_only: true
         bind:
           create_host_path: false
@@ -263,12 +288,14 @@ services:
     environment:
       TZ: ${TZ}
       SEARCH_RESULT_LIMIT: ${SEARCH_RESULT_LIMIT:-20}
-      DOWNLOAD_ENABLED: ${DOWNLOAD_ENABLED:-false}
+      # On by default: the frontend auto-saves a YouTube track once it
+      # finishes playing. See app/main.py and README.md's Security model.
+      DOWNLOAD_ENABLED: ${DOWNLOAD_ENABLED:-true}
       # Empty, not "*" — see app/main.py's CORS_ORIGINS comment.
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       # Protects /api/save when DOWNLOAD_ENABLED=true — see app/main.py.
       API_TOKEN: ${API_TOKEN:-}
-      DOWNLOADS_PATH: /downloads
+      MUSIC_SAVE_PATH: /music/youtube
       # yt-dlp caches the expensive part of extraction here (notably the
       # parsed player-JS signature/nsig functions), keyed by YouTube player
       # version — reused across requests AND, with this on a named volume,
@@ -280,11 +307,17 @@ services:
       XDG_CACHE_HOME: /cache
 
     volumes:
-      # rw: this IS the writer for /api/save. Scoped to downloads/ only —
-      # never the music/ library itself. See app/main.py.
+      # rw: this IS the writer for /api/save, but scoped to just this one
+      # subfolder of the music library, never the rest of /music. This
+      # container has no `user:` override and runs as root (needed so a
+      # write here works regardless of whether MEDIA_LIBRARY_ROOT points at
+      # a plain MEDIA_ROOT-owned directory or one inside home-drive's
+      # Nextcloud data directory, owned by Nextcloud's own www-data uid at
+      # mode 750). See app/main.py and README.md's Security model for what
+      # that trade-off means and how to disable it (DOWNLOAD_ENABLED=false).
       - type: bind
-        source: ${MEDIA_ROOT}/downloads
-        target: /downloads
+        source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/music/YouTube
+        target: /music/youtube
         bind:
           create_host_path: false
       - type: bind
@@ -313,6 +346,17 @@ services:
     container_name: pihub-pitune-frontend
     restart: unless-stopped
     logging: *default-logging
+
+    environment:
+      # Templated into a same-origin config.js at container start (see
+      # frontend/docker-entrypoint.d/) so the browser's own auto-save
+      # request can set the X-PiHub-Token header pitune-backend requires.
+      # Readable from this page's own source, same as any client-side
+      # value; that's fine here, since the header's actual job is
+      # defeating a THIRD-PARTY site's blind cross-origin POST (which can't
+      # read this page's JS regardless), not hiding a secret from PiHub's
+      # own legitimate users. See app/main.py's require_token comment.
+      API_TOKEN: ${API_TOKEN:-}
 
     # PiTune's own internal composition (not a cross-product dependency —
     # see the file header) — its nginx proxies /api/ and /rest/ to these.
@@ -354,18 +398,43 @@ services:
     environment:
       TZ: ${TZ}
 
+    # The official image has no PUID/PGID handling and runs as root by
+    # default, unlike navidrome above. Root already reads anything its
+    # mounts reach regardless of Unix permissions, so this group_add is
+    # only a defensive no-op today (in case that ever changes, or you
+    # override `user:` yourself). Same MEDIA_GID as navidrome; see
+    # .env.example's comment and README.md's "Mounting a Nextcloud folder
+    # as your media library" section.
+    group_add:
+      - "${MEDIA_GID:-0}"
+
     volumes:
       - type: bind
         source: ${JELLYFIN_CONFIG_PATH}
         target: /config
         bind:
           create_host_path: false
+      # MEDIA_LIBRARY_ROOT, when set, redirects these three (and
+      # navidrome's music/ above), never downloads/, backups/, or movies/
+      # below, which stay under MEDIA_ROOT always. See README.md's
+      # "Mounting a Nextcloud folder as your media library".
       - type: bind
-        source: ${MEDIA_ROOT}/videos
+        source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/videos
         target: /media/videos
         read_only: true
         bind:
           create_host_path: false
+      # Always MEDIA_ROOT, deliberately never MEDIA_LIBRARY_ROOT: individual
+      # movie files routinely exceed 50GB, which is a real problem for
+      # Nextcloud specifically (its chunked-upload size ceiling, wasted
+      # preview-generation attempts on huge video files, a much slower
+      # occ files:scan/backup pass once files that size are in its index,
+      # and sync clients/mobile apps that are impractical at that size). If
+      # you want movies inside Nextcloud anyway, edit this line yourself;
+      # the default here is "manage this folder directly on the drive
+      # instead" (copy/move/delete files onto MEDIA_ROOT/movies by hand,
+      # over a network share, USB, or SFTP), not something Nextcloud's own
+      # UI or sync clients ever touch.
       - type: bind
         source: ${MEDIA_ROOT}/movies
         target: /media/movies
@@ -373,22 +442,34 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: ${MEDIA_ROOT}/shows
+        source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/shows
         target: /media/shows
         read_only: true
         bind:
           create_host_path: false
+      # Pictures. A native Jellyfin "Photos" library type (Dashboard →
+      # Libraries → Add → Photos), not a separate app: it already covers
+      # browsing, thumbnails and slideshow playback without adding Immich
+      # or anything else to the stack.
+      - type: bind
+        source: ${MEDIA_LIBRARY_ROOT:-${MEDIA_ROOT}}/photos
+        target: /media/photos
+        read_only: true
+        bind:
+          create_host_path: false
 
-    # V4L2 stateless decode devices — this is the standard device layout on
-    # Raspberry Pi OS's kernel (Pi 5 decodes; it does NOT hardware-encode, so
-    # this only ever helps as a fallback — direct play stays strictly
-    # preferred, see README.md). If these paths don't exist on your board
-    # (non-Pi hardware, or a kernel without V4L2 stateless codecs), comment
-    # this whole block out — Jellyfin still runs fine on software decoding.
+    # V4L2 stateless decode devices — the standard layout on Raspberry Pi OS's
+    # kernel (Pi 5 decodes; it does NOT hardware-encode, so this only ever
+    # helps as a fallback — direct play stays strictly preferred, see
+    # README.md). Docker treats a missing device as a fatal error and aborts
+    # the whole `up`, so each of these is a variable rather than a literal
+    # path: scripts/setup.sh probes the board and writes the real mapping
+    # when the node exists, leaving the harmless /dev/null:/dev/null default
+    # when it doesn't. Jellyfin runs fine on software decoding either way.
     devices:
-      - /dev/video10:/dev/video10
-      - /dev/video11:/dev/video11
-      - /dev/video12:/dev/video12
+      - ${JELLYFIN_V4L2_DEV10:-/dev/null:/dev/null}
+      - ${JELLYFIN_V4L2_DEV11:-/dev/null:/dev/null}
+      - ${JELLYFIN_V4L2_DEV12:-/dev/null:/dev/null}
 
     security_opt:
       - no-new-privileges:true
@@ -410,6 +491,113 @@ services:
     labels:
       - "autoheal=true"
 
+  # ══════════════════════════════════════════════════════════════════════
+  # Tailscale (optional) — reach PiHub from outside the LAN
+  # ══════════════════════════════════════════════════════════════════════
+  # Off by default: only starts as part of the "tailscale" profile
+  # (`pihub start tailscale`, or `docker compose --profile tailscale up
+  # -d`). PIHUB_PORT, NAVIDROME_PORT and JELLYFIN_PORT are completely
+  # unaffected either way — this is an ADDITIONAL way in, not a replacement.
+  #
+  # Stays on the normal compose network rather than using `network_mode:
+  # service:tailscale` (which would force nginx to give up its own `ports:`
+  # mapping) — `tailscale serve` proxies to the existing central `nginx`
+  # service by its Docker DNS name instead, which already does all the
+  # /pitune/, /jellyfin/ path routing internally (see tailscale/serve.json).
+  #
+  # Before enabling this: apply ../tailscale/acl-policy.hujson to your
+  # tailnet first. Without it, once this node joins the tailnet, EVERY
+  # port it has open — including NAVIDROME_PORT, JELLYFIN_PORT and even
+  # PIHUB_PORT itself — becomes reachable by any tailnet member, not just
+  # the :443 endpoint below. See ../tailscale/README.md.
+
+  # Hard gate, not just a doc warning: refuses to let `tailscale` (below)
+  # start at all if API_TOKEN is unset. Without this, enabling remote
+  # access on a box that never needed a token for pure-LAN use silently
+  # hands every approved tailnet device unauthenticated start/stop/
+  # restart/logs control over every container via homepage. This container
+  # exits 1 with an explicit error instead, and Compose refuses to start
+  # `tailscale` when it does (see that service's `depends_on: condition:
+  # service_completed_successfully`). A one-shot check like this can't live
+  # inside the `tailscale/tailscale` image itself, hence the separate tiny
+  # container.
+  tailscale-preflight:
+    profiles: ["tailscale"]
+    image: alpine:3.20
+    container_name: pihub-tailscale-preflight
+    restart: "no"
+    logging: *default-logging
+    environment:
+      API_TOKEN: ${API_TOKEN:-}
+    command:
+      - sh
+      - -c
+      - |
+        if [ -z "$$API_TOKEN" ]; then
+          echo "FATAL: API_TOKEN is unset, and the tailscale profile is" >&2
+          echo "starting. Once this node is reachable from outside the LAN," >&2
+          echo "homepage's start/stop/restart/logs endpoints would have NO" >&2
+          echo "auth at all, reachable by every approved tailnet device." >&2
+          echo "Set API_TOKEN in .env (see .env.example) first." >&2
+          exit 1
+        fi
+        echo "tailscale-preflight: OK."
+
+  tailscale:
+    profiles: ["tailscale"]
+    image: tailscale/tailscale:${TAILSCALE_TAG:-latest}
+    container_name: pihub-tailscale
+    hostname: ${TS_HOSTNAME:-pihub}
+    restart: unless-stopped
+    logging: *default-logging
+
+    # Deliberately no depends_on on nginx: it's in a different profile
+    # ("core"), and Compose refuses to even parse the file if a depends_on
+    # target's profile isn't active alongside the dependent service's (the
+    # exact issue docker-proxy's own comment above already documents for
+    # homepage). Not health-gated anyway — if nginx isn't up yet, `tailscale
+    # serve` just retries its proxy connection until it is. tailscale-preflight
+    # (same "tailscale" profile, no cross-profile issue) IS a hard gate — see
+    # its own comment above.
+    depends_on:
+      tailscale-preflight:
+        condition: service_completed_successfully
+
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      TS_HOSTNAME: ${TS_HOSTNAME:-pihub}
+      TS_SERVE_CONFIG: /config/tailscale/serve.json
+      TS_USERSPACE: "false"
+      TS_ACCEPT_DNS: "true"
+      # e.g. --advertise-tags=tag:pihub-server — see ../tailscale/acl-policy.hujson.
+      TS_EXTRA_ARGS: ${TS_EXTRA_ARGS:-}
+      TS_STATE_DIR: /var/lib/tailscale
+      TZ: ${TZ}
+
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./tailscale:/config/tailscale:ro
+      - /dev/net/tun:/dev/net/tun
+
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      # See home-drive/docker-compose.yml's identical check for why this
+      # asserts on BackendState specifically rather than the exit code.
+      test:
+        - CMD-SHELL
+        - "tailscale status --json | tr -d '[:space:]' | grep -q '\"BackendState\":\"Running\"'"
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 45s
+
 # ── Named volumes ────────────────────────────────────────────────────────────
 volumes:
-  ytdlp-cache:   # yt-dlp's extractor cache (see pitune-backend's environment)
+  ytdlp-cache:      # yt-dlp's extractor cache (see pitune-backend's environment)
+  tailscale-state:  # Tailscale auth/state — only used if the tailscale profile runs

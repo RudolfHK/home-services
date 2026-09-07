@@ -1,7 +1,7 @@
 # Hardware Guide: Raspberry Pi 5 Home Drive
 
 This page lists every piece of hardware recommended for a reliable, always-on home drive
-running the FileBrowser + CouchDB stack.
+running the Nextcloud stack.
 
 ---
 
@@ -11,8 +11,8 @@ running the FileBrowser + CouchDB stack.
 
 | Variant | Notes |
 |---------|-------|
-| 4 GB RAM | Sufficient for this stack (Tailscale ~50 MB, FileBrowser ~30 MB, CouchDB ~200 MB). |
-| 8 GB RAM | Recommended if you plan to add more services later (Home Assistant, Jellyfin, etc.). |
+| 4 GB RAM | Sufficient for this stack (Nextcloud, PostgreSQL and Redis together run at roughly 900 MB at idle). |
+| 8 GB RAM | Recommended if you plan to add more services later (PiHub, Home Assistant, etc.). |
 
 The Pi 5 uses a **PCIe 2.0 x1** lane exposed via the FPC connector on the board. This is
 what makes NVMe storage practical for the first time on a Pi.
@@ -50,7 +50,7 @@ triggers thermal throttling and slows the whole stack.
 | Option | Notes |
 |--------|-------|
 | **NVMe SSD via PCIe HAT** (recommended) | Fastest option. Get a HAT that exposes the PCIe FPC connector as an M.2 slot (e.g. Pimoroni NVMe Base, Waveshare PCIe to M.2 HAT). Any PCIe Gen 2/3 M.2 2230/2242/2280 NVMe works. 64–256 GB is plenty for the OS + Docker layers. |
-| microSD A2 Class 32 GB+ | Works but is slower and less durable for continuous write workloads (Docker logs, CouchDB writes). Use a high-endurance card (Samsung Pro Endurance, SanDisk Max Endurance). |
+| microSD A2 Class 32 GB+ | Works but is slower and less durable for continuous write workloads (Docker logs, PostgreSQL writes). Use a high-endurance card (Samsung Pro Endurance, SanDisk Max Endurance). |
 
 To boot from NVMe, flash the NVMe SSD with Raspberry Pi Imager, then update the boot
 order in `raspi-config` → Advanced Options → Boot Order → NVMe/USB Boot.
@@ -59,7 +59,7 @@ order in `raspi-config` → Advanced Options → Boot Order → NVMe/USB Boot.
 
 ### Storage: Data Drive (external)
 
-All FileBrowser files and CouchDB data live on a **separate** drive from the OS.
+All Nextcloud data lives on a **separate** drive from the OS.
 This makes backups, replacements, and re-imaging the OS much easier.
 
 | Option | Notes |
@@ -83,7 +83,7 @@ This makes backups, replacements, and re-imaging the OS much easier.
 
 ### Optional: UPS HAT
 
-A brief power cut will corrupt the CouchDB data files if the Pi shuts down uncleanly.
+A brief power cut will corrupt the PostgreSQL data files if the Pi shuts down uncleanly.
 A mini UPS HAT (e.g. Pisugar 3, Waveshare UPS HAT) gives the Pi ~15–30 minutes to shut
 down gracefully.
 

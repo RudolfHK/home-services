@@ -8,38 +8,68 @@
 </head>
 <body>
 
-  <header class="topbar">
+  <!-- Full-app gate: shown instead of everything else (tabs, YouTube search,
+       queue, player) until a Navidrome login is saved. Previously only the
+       Library tab itself checked for a login, which left YouTube
+       search/download, the queue, and playback fully usable without ever
+       logging in, since that feature has nothing to do with Navidrome to
+       begin with. See app.js's setAppLocked(). -->
+  <div id="app-lock" class="app-lock">
+    <div id="library-login" class="login-box">
+      <p>Enter your Navidrome account to use PiTune.</p>
+      <input id="login-user" type="text" placeholder="Username" autocomplete="username">
+      <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
+      <button id="login-submit">Connect</button>
+      <p class="hint">Stored only in this browser (localStorage). Create a user first from
+        Navidrome's own admin UI if you haven't already.</p>
+    </div>
+  </div>
+
+  <header class="topbar hidden">
     <h1>PiTune</h1>
     <nav class="tabs">
       <button class="tab-btn active" data-tab="library">Library</button>
       <button class="tab-btn" data-tab="youtube">YouTube</button>
       <button class="tab-btn" data-tab="queue">Queue</button>
+      <button class="tab-btn" data-tab="discover">Discover</button>
     </nav>
   </header>
 
-  <main>
+  <main class="hidden">
     <!-- Local library, browsed via Navidrome's Subsonic API -->
     <section id="tab-library" class="tab-panel active">
-      <div id="library-login" class="login-box hidden">
-        <p>Enter your Navidrome account to browse the local library.</p>
-        <input id="login-user" type="text" placeholder="Username" autocomplete="username">
-        <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
-        <button id="login-submit">Connect</button>
-        <p class="hint">Stored only in this browser (localStorage). Create a user first from
-          Navidrome's own admin UI if you haven't already.</p>
-      </div>
-
-      <!-- Shown instead of the login form when a saved login exists but
+      <!-- Shown when a saved login exists but
            Navidrome didn't answer (e.g. mid-restart) — the credentials are
            kept, not re-requested, since nothing said they were wrong. -->
       <div id="library-connection-error" class="login-box hidden">
         <p id="library-connection-error-message">Could not reach Navidrome.</p>
         <button id="library-retry">Retry</button>
+        <button id="library-use-different-account">Use a different account</button>
       </div>
 
       <div id="library-browser" class="browser hidden">
-        <div class="breadcrumbs" id="library-breadcrumbs"></div>
-        <ul class="item-list" id="library-list"></ul>
+        <nav class="library-sidebar">
+          <button class="library-nav-btn" data-section="songs">Songs</button>
+          <button class="library-nav-btn" data-section="albums">Albums</button>
+          <button class="library-nav-btn active" data-section="artists">Artists</button>
+          <button class="library-nav-btn" data-section="favorites">Favorites</button>
+          <button class="library-nav-btn" data-section="recent">Recently Added</button>
+          <button class="library-nav-btn" data-section="most-played">Most Played</button>
+          <button class="library-nav-btn" data-section="playlists">Playlists</button>
+        </nav>
+        <div class="library-content">
+          <!-- Searches the whole library (Subsonic search3), independent of
+               whichever sidebar section is selected; see app.js's
+               #library-search-form submit handler. Clearing it and
+               submitting again goes back to that section. -->
+          <form id="library-search-form" class="search-bar">
+            <input id="library-search-input" type="search" placeholder="Search your library…" autocomplete="off">
+            <button type="submit">Search</button>
+          </form>
+          <div class="breadcrumbs" id="library-breadcrumbs"></div>
+          <ul class="item-list" id="library-list"></ul>
+          <button id="library-load-more" class="library-load-more hidden">Load more</button>
+        </div>
       </div>
     </section>
 
@@ -56,9 +86,33 @@
     <section id="tab-queue" class="tab-panel">
       <ul class="item-list" id="queue-list"></ul>
     </section>
+
+    <!-- Discover: not implemented yet. See app.js's Discover section and
+         README.md's "Discover (not yet implemented)". -->
+    <section id="tab-discover" class="tab-panel">
+      <div class="discover-placeholder">
+        <h2>Discover</h2>
+        <p>
+          Browse your library by <strong>sound</strong> instead of artist or album:
+          tempo, key and mood, with similar-sounding tracks grouped together.
+        </p>
+        <p class="hint">
+          Not implemented yet. This will run two analysis passes over your library on
+          demand, not automatically: audio analysis (tempo/key/mood) and similarity
+          grouping, both explained in README.md's Discover section. Both are CPU-heavy,
+          which is why this stays a manual, explicit action rather than something that
+          runs on every library scan.
+        </p>
+        <button id="discover-analyze-btn" disabled title="Not implemented yet">
+          Analyze library (not yet implemented)
+        </button>
+        <div id="discover-progress" class="hidden"></div>
+        <ul class="item-list" id="discover-results"></ul>
+      </div>
+    </section>
   </main>
 
-  <footer class="player-bar">
+  <footer class="player-bar hidden">
     <div class="now-playing">
       <div class="track-title" id="np-title">Nothing playing</div>
       <div class="track-artist" id="np-artist"></div>
@@ -84,6 +138,23 @@
 
   <audio id="audio" preload="none"></audio>
 
+  <!-- Shared by "+ New playlist" (Playlists section) and a song's 📋 button
+       (add to playlist); one modal, driven by openPlaylistCreateModal() and
+       openPlaylistPicker() in app.js, rather than two separate prompt()s. -->
+  <div id="playlist-modal" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 id="playlist-modal-title">Playlists</h3>
+      <p id="playlist-modal-hint" class="hint hidden"></p>
+      <ul id="playlist-modal-list" class="item-list"></ul>
+      <form id="playlist-modal-create-form" class="playlist-modal-create">
+        <input id="playlist-modal-name" type="text" placeholder="New playlist name" autocomplete="off">
+        <button type="submit">Create</button>
+      </form>
+      <button id="playlist-modal-close" class="modal-close">Cancel</button>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

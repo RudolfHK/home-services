@@ -31,7 +31,7 @@ independent: stop or crash one, the others keep running.
        container's  │ :4533  │ │backend│
        status/logs  └───┬────┘ └───┬──┘
                          │          │
-                /media/music   /media/downloads
+                /media/music   /media/music/youtube
                  (read-only)     (read-write)
 ```
 
@@ -67,10 +67,10 @@ from `.env`'s `COMPOSE_PROFILES` without affecting the others. See
   `MEDIA_ROOT` uses `create_host_path: false`, so a disconnected drive means
   Navidrome/Jellyfin's containers simply don't start, and the homepage
   dashboard shows them as "not found," not a crash loop.
-- **`/api/save` writes to a disposable `downloads/` folder, never the curated
-  music library.** See `pitune/backend/app/main.py`. Add `downloads/` as a
-  second Navidrome library from its own admin UI once you trust what's
-  landing there.
+- **`/api/save` writes into `music/YouTube/`, inside the actual library, and
+  runs automatically once a YouTube track finishes playing.** On by default
+  (`DOWNLOAD_ENABLED=true`). Scoped to that one subfolder, never the rest of
+  `music/`. See `pitune/backend/app/main.py`.
 - **Jellyfin's healthcheck can't be a `/health` path check.** Setting Base
   URL (required; see Quick start) moves ALL of Jellyfin's routes under that
   prefix, `/health` included. A check hardcoded to `/health` would pass
@@ -189,8 +189,10 @@ admin UI, which PiHub doesn't reimplement):
 1. Open `http://<pi>:4533/` and create your first Navidrome user. PiTune's
    own Library tab logs in with that account.
 2. Open `http://<pi>:8096/`, run Jellyfin's setup wizard, add your
-   videos/movies/shows libraries, then go to **Dashboard → Networking →
-   Base URL**, set it to `/jellyfin`, and restart the `jellyfin` service
+   videos/movies/shows libraries plus a **Photos**-type library pointed at
+   `/media/photos` (Dashboard → Libraries → Add Media Library → Content
+   type: Photos), then go to **Dashboard → Networking → Base URL**, set it
+   to `/jellyfin`, and restart the `jellyfin` service
    (`./pihub restart jellyfin`). Without this, Jellyfin's own links and
    websocket calls are generated without the prefix and break under the
    `/jellyfin/` proxy path.
@@ -208,6 +210,7 @@ pihub start all           # start everything, regardless of .env
 pihub restart jellyfin    # restart one product
 pihub logs pitune         # tail logs for a product (or a raw container name)
 pihub update              # pull latest images, recreate only what was running
+pihub start tailscale     # optional — see Remote access via Tailscale
 ```
 
 ## Configuration (`.env`)
@@ -215,26 +218,181 @@ pihub update              # pull latest images, recreate only what was running
 | Variable | Default | What it controls |
 |---|---|---|
 | `COMPOSE_PROFILES` | `core,homepage,pitune,jellyfin` | Which products a bare `docker compose up -d` brings up. Narrowing this doesn't limit `pihub`; see `pihub`'s `compose()` wrapper. |
-| `MEDIA_ROOT` | `/media/storage` | The external drive. `setup.sh` creates `music/ videos/ movies/ shows/ downloads/ photos/ backups/` under it. |
+| `MEDIA_ROOT` | `/media/storage` | The external drive. `setup.sh` creates `music/ (with music/YouTube/) videos/ movies/ shows/ photos/ downloads/ backups/` under it. |
 | `NAVIDROME_DATA_PATH` / `JELLYFIN_CONFIG_PATH` | `./navidrome/data` / `./jellyfin/config` | Per-service config, deliberately off `MEDIA_ROOT`, since a missing media drive must never take a service's own config down with it. |
-| `PIHUB_PORT` | `80` | The one port for daily use. |
+| `PIHUB_PORT` | `80` | The one port for daily use. If home-drive's Nextcloud also runs on this Pi, it defaults to this same port; `setup.sh` refuses to start with a clear message if something else already holds it, so set this to e.g. `8080` first. |
 | `NAVIDROME_PORT` / `JELLYFIN_PORT` | `4533` / `8096` | Published directly too: Navidrome for its one-time admin/account setup, Jellyfin for its setup wizard and for troubleshooting hardware transcoding without the proxy in the way. |
 | `PUID` / `PGID` | `1000`/`1000` | uid/gid Navidrome runs as, so it can read `MEDIA_ROOT`. |
-| `DOWNLOAD_ENABLED` | `false` | Enables PiTune's "save this YouTube track" button, writing MP3s into `MEDIA_ROOT/downloads/`. |
+| `MEDIA_LIBRARY_ROOT` | unset (falls back to `MEDIA_ROOT`) | Redirects only `music/videos/shows/photos` (never `movies/`, which routinely exceeds 50GB per file and always stays under `MEDIA_ROOT`) to a different parent directory, e.g. a folder inside home-drive's Nextcloud. See [Mounting a Nextcloud folder as your media library](#mounting-a-nextcloud-folder-as-your-media-library-optional) below. |
+| `MEDIA_GID` | `0` (no-op) | Extra group Navidrome/Jellyfin are also given read access through. Only needed alongside `MEDIA_LIBRARY_ROOT` above, when it points at a directory owned by a different uid/gid than `PUID`/`PGID`. |
+| `DOWNLOAD_ENABLED` | `true` | Once a YouTube track finishes playing, PiTune automatically saves it into `music/YouTube/`, inside the actual library. Set to `false` to turn this off. |
 | `YTDLP_COOKIES_HOST_FILE` | unset | Path to a Netscape-format `cookies.txt`, for age-restricted/region-locked videos. |
 
 ## Storage layout
 
 ```
 ${MEDIA_ROOT}/
-├── music/       → Navidrome (read-only)
-├── videos/      → Jellyfin, general library (read-only)
-├── movies/      → Jellyfin, movies library (read-only)
-├── shows/       → Jellyfin, TV library (read-only)
-├── downloads/   → PiTune's yt-dlp saves (read-write for pitune-backend only)
-├── photos/      → reserved for a future Immich, nothing mounts it yet
-└── backups/     → scripts/backup.sh's default destination
+├── music/           → Navidrome (read-only)
+│   └── YouTube/     → PiTune's auto-saved tracks (read-write for pitune-backend only)
+├── videos/          → Jellyfin, general library (read-only)
+├── movies/          → Jellyfin, movies library (read-only); always stays here, see below
+├── shows/           → Jellyfin, TV library (read-only)
+├── photos/          → Jellyfin, Photos library (read-only)
+├── downloads/       → unused by default, free for your own manual use
+└── backups/         → scripts/backup.sh's default destination
 ```
+
+If `MEDIA_LIBRARY_ROOT` is set, `music/videos/shows/photos` move there;
+`downloads/backups/movies` always stay under `MEDIA_ROOT` regardless. See
+below for why `movies/` in particular is deliberately excluded.
+
+## Mounting a Nextcloud folder as your media library (optional)
+
+If this repo's `home-drive` stack is already running on the **same Pi**
+(this only works as a same-machine bind mount, not over the network), you
+can point PiHub's `music/videos/shows/photos` straight at a folder inside
+its Nextcloud data directory, so adding, moving, or deleting files through
+Nextcloud's own web UI, sync clients, or phone app is what actually manages
+your library, instead of keeping a separate folder in sync by hand.
+`movies/` is not part of this; see "Why `movies/` never moves" below.
+This is also how a saved YouTube track (see `music/YouTube/` above) ends up
+editable from any device running the Nextcloud client, not just from the Pi.
+
+Nextcloud stores every user's files on the host at
+`${DATA_PATH}/nextcloud/data/<nextcloud-username>/files/...`, where
+`DATA_PATH` is set in **home-drive's own** `.env` (not PiHub's). So if
+home-drive's `DATA_PATH=/mnt/data` and your Nextcloud username is `admin`,
+a `media` folder created in the Nextcloud web UI lives on disk at
+`/mnt/data/nextcloud/data/admin/files/media`, and PiHub expects `music/`,
+`videos/`, `shows/`, and `photos/` subfolders (those exact lowercase
+names) underneath it. Don't create a `movies/` subfolder here; it doesn't
+belong inside Nextcloud at all (see below) and PiHub never looks for one
+in this location.
+
+**Why you can't just point `MEDIA_LIBRARY_ROOT` there and go.**
+home-drive's own `scripts/install.sh` deliberately `chown`s the whole
+`${DATA_PATH}/nextcloud/data` tree to Nextcloud's own internal user
+(commonly uid/gid 33, detected per-image, not hardcoded) and sets it to
+mode `750`, specifically so nothing outside the Nextcloud container can
+read it by default. Navidrome runs as `PUID:PGID` (1000:1000 by default),
+which is neither that user nor in its group, so a plain bind mount there
+fails with a permission error.
+
+**The fix**, without touching home-drive's own ownership or loosening its
+permissions:
+
+1. In Nextcloud's own web UI (or a sync client), create a `media` folder
+   under your user, then `music`, `videos`, `shows`, and `photos`
+   subfolders inside it (not `movies/`; see "Why `movies/` never moves"
+   below), and put the matching files in each. Creating them through
+   Nextcloud itself, rather than `mkdir` on the host, means Nextcloud's
+   own index already knows about them from the start; see home-drive's
+   [README.md](../home-drive/README.md#the-one-rule-nothing-else-writes-into-the-drive-without-telling-nextcloud)
+   for what goes wrong if you add files from outside instead, and how to
+   recover when something (PiTune's own auto-save included) has to.
+2. Find the group that owns the Nextcloud data directory:
+   ```bash
+   stat -c '%g' /mnt/data/nextcloud/data     # replace with home-drive's actual DATA_PATH
+   ```
+3. In PiHub's `.env`, set `MEDIA_GID` to that number, and
+   `MEDIA_LIBRARY_ROOT` to the `media` folder itself, not its subfolders
+   (the compose file appends `music`/`videos`/`shows`/`photos` on its
+   own; `movies` is never appended from this variable, see below):
+   ```bash
+   MEDIA_GID=33
+   MEDIA_LIBRARY_ROOT=/mnt/data/nextcloud/data/admin/files/media
+   ```
+   `MEDIA_GID` adds that group as a *supplementary* group on the
+   `navidrome` and `jellyfin` containers (`group_add` in
+   `docker-compose.yml`), on top of their normal user. It doesn't change
+   who owns anything on disk, and it only grants read access, matching
+   the `750` permission's own group bits (`r-x`, no write): neither
+   container can write into your Nextcloud files even if something else
+   asked them to.
+4. Also create `media/music/YouTube` the same way, through Nextcloud, if
+   you want saved YouTube tracks to land inside Nextcloud too (optional;
+   see the next paragraph for what changes if you do).
+5. Recreate the affected containers so the new mounts and group take
+   effect:
+   ```bash
+   pihub restart pitune
+   pihub restart jellyfin
+   ```
+
+**Why `movies/` never moves.** Unlike `music/videos/shows/photos`,
+`movies/` is not one of the folders `MEDIA_LIBRARY_ROOT` can redirect at
+all; `docker-compose.yml`'s jellyfin service pins its `movies` mount to
+`MEDIA_ROOT` directly, with no `MEDIA_LIBRARY_ROOT` fallback in that one
+line. Individual movie files routinely exceed 50GB, and that's a real
+problem specific to Nextcloud: its chunked-upload size ceiling, wasted
+preview-generation attempts on huge video files, a `files:scan`/backup
+pass that gets noticeably slower once files that size are in Nextcloud's
+index, and sync clients/mobile apps that are impractical at that size in
+the first place. `movies/` always stays under `MEDIA_ROOT` and is meant to
+be managed directly on the drive, copy/move/delete by hand over a network
+share, USB, or SFTP, never through Nextcloud's web UI or sync clients. If
+you've decided that trade-off doesn't apply to you (a fast LAN, a Nextcloud
+instance you don't mind being slower, files reliably under whatever your
+own comfort threshold is), edit that one line in `docker-compose.yml`
+yourself; this isn't enforced anywhere beyond that default.
+
+**`downloads/` and `backups/` are never redirected by `MEDIA_LIBRARY_ROOT`,
+and that's deliberate; `music/YouTube/` is different.** `pitune-backend`
+(the writer behind `/api/save`) has no `user:` override and runs as root,
+which ignores Unix permissions on anything its mounts can reach; that is
+what makes a write into a `750`, Nextcloud-owned `music/YouTube/` work at
+all. Unlike `downloads/`/`backups/`, which have no reason to ever exist
+inside Nextcloud, `music/YouTube/` is meant to end up wherever the rest of
+`music/` lives, Nextcloud-backed or not, since a saved track only earns its
+place in your library the same way anything else does. The trade-off this
+carries: if `MEDIA_LIBRARY_ROOT` points into Nextcloud, its own database
+does **not** learn about a newly-saved file automatically, exactly the
+"nothing else writes into the drive" case home-drive's README describes.
+Run `docker exec -u www-data homedrive-nextcloud-app php occ files:scan --all`
+after the fact (or put it on the same schedule as PiTune's auto-saves,
+however often that ends up being for you), or set `DOWNLOAD_ENABLED=false`
+if you'd rather this never happens automatically.
+
+New files added through Nextcloud show up in PiTune/Jellyfin once their
+own scans pick them up: Navidrome within `ND_SCANSCHEDULE` (every hour by
+default) or a manual rescan from its admin UI; Jellyfin on its own library
+scan schedule (**Dashboard → Libraries → Scan All Libraries** to force
+one). Nothing Nextcloud-side needs to know either is reading from here,
+since both only ever read.
+
+## Discover (not yet implemented)
+
+PiTune's **Discover** tab is scaffolding for a Spotify-style "browse your
+library by sound" feature: find tracks that sound like this one, or like
+"upbeat" or "late night," instead of only ever browsing by artist or album.
+The UI tab and empty backend endpoints exist (`pihub/pitune/frontend/src/app.js`'s
+Discover section, `pihub/pitune/backend/app/main.py`'s `/api/discover/*`
+routes); nothing behind them runs any analysis yet.
+
+The design, for whoever implements it next, is two passes:
+
+1. **Raw audio analysis.** Run each library track through a model that
+   estimates its acoustic properties directly from the waveform, the way
+   Spotify's own audio features API works: tempo (BPM), musical key, and a
+   mood/valence-arousal estimate. Output is one small feature vector per
+   track. This has to be cached somewhere durable (a small local database,
+   not recomputed per request) since it's the expensive part.
+2. **Annoy** (Approximate Nearest Neighbor, the library Spotify itself
+   published for exactly this) built as an index over those feature
+   vectors, so "tracks similar to this one" becomes a nearest-neighbor
+   lookup in that vector space, and browsing by mood/energy becomes
+   clustering in the same space, instead of either needing a raw metadata
+   match (same genre tag) that misses most real similarity.
+
+**Why this stays manual, not automatic.** Both passes are real CPU work,
+the first pass especially: analyzing an entire library is closer to
+transcoding every track once than to a metadata scan. Running it
+automatically on every Navidrome library scan (every hour, by default)
+would make PiTune noticeably slower on a Pi for no benefit most of the
+time. That's why `POST /api/discover/analyze` exists as an explicit,
+separate action (the "Analyze library" button in the Discover tab, wired
+but disabled until this is implemented) rather than a side effect of
+anything else in this stack.
 
 ## Raspberry Pi considerations
 
@@ -250,32 +408,136 @@ ${MEDIA_ROOT}/
   codecs this way but cannot hardware-*encode*, so direct play is still
   strictly preferred; hardware transcoding is a fallback for the codecs it
   can't play directly, enabled from Jellyfin's own admin UI (**Dashboard →
-  Playback**, V4L2M2M). If those device paths don't exist on your board,
-  comment the whole block out; Jellyfin runs fine on software decoding.
+  Playback**, V4L2M2M). Those paths are not present on every board — Pi 5
+  included, depending on kernel and overlays — and Docker aborts the entire
+  `up` over a device it can't find, so `scripts/setup.sh` probes for them and
+  writes `JELLYFIN_V4L2_DEV10/11/12` into `.env` accordingly. Nothing to do
+  by hand: absent devices mean software decoding, which is fine. If your
+  board exposes a decoder under different numbers (`ls -l /dev/video*`), set
+  those variables yourself as `host:container` pairs.
 - **Idle RAM.** Core + PiTune + Jellyfin (idle, no active streams) should sit
   comfortably under the ~1.5GB target on an 4GB Pi 5; Jellyfin's own memory
   use grows mainly while actively transcoding.
 
+## Jellyfin playback & streaming quality
+
+Everything in this section lives inside Jellyfin's own admin dashboard and
+its web player, not in a file this repo tracks: Jellyfin keeps all of it in
+`JELLYFIN_CONFIG_PATH` (a bind-mounted, gitignored SQLite database), so
+there's nothing here to commit. What follows is where to look and what to
+change, plus the one Pi 5 hardware limit (already noted above: decode only,
+no encode) that quietly explains three of the four questions below.
+
+**First, find out what's actually happening: Direct Play or Transcode.**
+Open the player's on-screen controls during playback and look for the
+playback-info panel (an info/stats icon in the OSD, or the same panel from
+the item's detail page while it's playing). It names a **Play Method**:
+
+- **Direct Play**: the original file, byte for byte, sent straight through.
+  No server-side work beyond reading the file, so it can run at the file's
+  full original bitrate and resolution.
+- **Direct Stream**: same file, only the container is repackaged (audio/
+  video left untouched); still cheap.
+- **Transcode**: the video is being decoded and *re-encoded* live to
+  something the client can play.
+
+The 6 Mbps ceiling almost always means the file landed on Transcode. That
+happens when the browser can't play the source codec/container itself
+(common with 4K HEVC in some browsers), when a subtitle needs to be burned
+into the video, or when a quality/bitrate limit (below) forced it. On a Pi
+5, that matters more than on a PC: Jellyfin can hardware-*decode* through
+the V4L2 devices already discussed above, but there's no hardware *encode*
+path, so a live transcode falls back to software x264 on the Pi's CPU.
+Real-time software encoding of 4K in full quality is heavy enough that Jellyfin
+throttles resolution/bitrate down to whatever the CPU can sustain, which is
+exactly where a number like 6 Mbps comes from. So the effective fix isn't
+"raise the transcode bitrate", it's "get these files onto Direct Play":
+
+- Raise or remove the bitrate ceiling: the web player's quality selector
+  (gear icon in the OSD) has an explicit bitrate cap alongside an
+  Auto/Max option, and Jellyfin separately applies a lower cap to anything
+  it decides is a "remote" connection (**Dashboard → Networking**). Both can
+  quietly force a transcode even when the file would otherwise Direct Play.
+  Set both to Max/unrestricted for LAN and Tailscale use.
+- Match what the client can actually decode. If a title keeps transcoding
+  purely for video, the client (TV app, browser, phone) most likely can't
+  handle its codec/container natively; there's no server setting that turns
+  that into Direct Play, only re-muxing/re-encoding the file itself ahead of
+  time (outside Jellyfin) into a broadly-supported codec would.
+- If it must transcode, hardware acceleration only helps decode on this
+  board (**Dashboard → Playback**, V4L2M2M, per the bullet above); the
+  encode side stays on the CPU regardless, so expect any transcoded 4K
+  stream to be capped well below the source bitrate no matter what the
+  dashboard sliders say.
+
+**Why changing subtitle/audio language restarts the stream to the title
+image.** Whatever Play Method was in use, switching tracks mid-playback
+almost always forces Jellyfin to open a brand new stream at your current
+position rather than adjust the existing one in place: a subtitle format
+that needs to be burned into the picture (image-based ones like PGS/VOBSUB,
+or "forced" burn-in) can only take effect by re-encoding from that point on,
+and even swapping between two already-compatible audio tracks typically
+still means renegotiating the connection, since a Direct Play session is
+just the browser reading one fixed byte range of the file, not something
+that can be told "decode a different embedded track" after the fact. The
+web player shows the item's backdrop while that new session spins up
+because, from its point of view, playback did stop, a new one is starting.
+That's client behavior baked into `jellyfin-web`, not a PiHub setting, so it
+can't be reconfigured from this repo; what you can influence is how often
+it happens. Text-based subtitles (SRT/ASS/VTT) are rendered by the browser
+itself, layered on top of the video, so selecting one of those, instead of
+an image-based track, never touches the underlying stream at all and won't
+restart anything. Audio-track switches restart regardless of format, since
+that's the one-active-track-per-session limitation described above, not a
+subtitle-specific one.
+
+**What the vertical lines on the seek bar are.** Chapter markers, pulled
+from the file's own embedded chapter metadata if it has any. If a title has
+none, Jellyfin can still generate them (**Dashboard → Scheduled Tasks →
+Extract Chapter Images**) which is also what populates the little thumbnail
+previews you get hovering over the seek bar on titles that do show them.
+
+**Buffering ahead of the playhead, so a stutter in the connection doesn't
+stop playback.** For Direct Play, this already happens and needs no config:
+the browser's own `<video>` element requests the file ahead of where you
+are and keeps a lead, the same way any HTML5 video does. It's visible on
+the seek bar itself, as a lighter fill reaching further right than the red
+"played" marker, distinct from the plain background covering the part you
+haven't reached yet; that lighter section is exactly the buffered-ahead
+amount already sitting in the browser. For a Transcode session, Jellyfin's
+web client uses HLS (segmented, several seconds each) and does the same
+kind of look-ahead by fetching a few segments in advance, so the same idea
+already applies there too. The catch on a Pi 5 is upstream of any buffer
+setting: a live software transcode of 4K can only produce those segments
+at, at best, roughly real-time speed (see the encode limitation above), so
+there's rarely more than a few seconds of already-encoded video for the
+player to get ahead on, no matter how large a lead the client is willing to
+hold. The professional-streaming-site experience the question is describing
+is really a description of Direct Play (a fixed file, so buffering minutes
+ahead costs nothing); getting more of the library there is the same fix as
+the bitrate question above, not a separate buffering feature to add.
+
 ## Security model
 
-Same posture as this repo's other stacks that don't put a VPN in front of
-themselves: this assumes it never leaves your home network. If you want
-access away from home, put PiHub behind your own VPN (see `home-drive`'s
-Tailscale setup for a working example) rather than exposing `PIHUB_PORT`
-directly to the internet.
+Same posture as this repo's other stacks by default: this assumes it never
+leaves your home network unless you turn on the optional Tailscale profile.
+See [Remote access via Tailscale](#remote-access-via-tailscale-optional)
+below, rather than exposing `PIHUB_PORT` directly to the internet.
 
 | Control | What it does |
 |---|---|
 | No raw Docker socket in homepage | It talks to `docker-proxy` (a `tecnativa/docker-socket-proxy` sidecar) instead, which forwards only the specific endpoints homepage needs. `EXEC=0` and everything else this stack doesn't use is off. A bug or a compromised dependency in homepage's own code only gets what the proxy allows through, never the whole Docker API. See `homepage/README.md`'s security model and `docker-compose.yml`'s `docker-proxy` service. |
 | homepage's config-driven container allow-list | On top of the proxy: every start/stop/restart/logs call is resolved against `homepage/config/services.yml`'s fixed container list; the API never accepts a raw container name from a caller. |
-| `API_TOKEN` on every mutating endpoint (homepage's start/stop/restart/logs, PiTune's `/api/save`) | Without it, those endpoints have no auth at all, and a plain unauthenticated POST is a "simple request" a browser sends cross-origin regardless of CORS. CORS only gates whether the *response* can be read, not whether the request is *sent*. `scripts/setup.sh` generates one automatically. See `homepage/backend/main.py`'s comments for the full reasoning, including its honest limit: this stops a malicious *webpage*, not a compromised device with direct LAN access. |
+| `API_TOKEN` on every mutating or sensitive-read endpoint (homepage's start/stop/restart/logs, PiMonitor's file-activity/user-activity, PiTune's `/api/save`, once implemented PiTune's `/api/discover/analyze`) | Without it, those endpoints have no auth at all, and a plain unauthenticated POST is a "simple request" a browser sends cross-origin regardless of CORS. CORS only gates whether the *response* can be read, not whether the request is *sent* (which is why PiMonitor's own reads are gated the same way as an actual mutation, even though nothing about them changes state). `scripts/setup.sh` generates one automatically. PiTune's frontend is handed this value at container start (templated into `config.js`, see `pitune/frontend/docker-entrypoint.d/`) so its own automatic save-on-finish call can set the header; that's a deliberate, safe exception, not a leak, since the header's real job is defeating a *third-party* site's blind cross-origin POST, which can't read PiTune's own page regardless. See `homepage/backend/main.py`'s comments for the full reasoning, including its honest limit: this stops a malicious *webpage*, not a compromised device with direct LAN access. |
 | `CORS_ORIGINS` empty by default, not `*` | Every frontend here is always same-origin with its own API (reached through nginx), so legitimate use never needs a cross-origin allowance. |
 | Security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, a `Content-Security-Policy` for homepage and PiTune) | Set at PiHub's central nginx and, for homepage, also in its own FastAPI app (so its standalone deployment mode is covered too; nginx hides the duplicate). Not applied to Jellyfin's own responses: its player needs `blob:`/worker allowances for transcoding that aren't safe to guess at from outside its own app. |
-| Media library mounts are `read_only: true` everywhere except PiTune's `downloads/` | Navidrome and Jellyfin can't be tricked into writing into your library; the one writer (`pitune-backend`) is scoped to a disposable folder, not the library itself. |
+| Media library mounts are `read_only: true` everywhere except PiTune's `music/YouTube/` | Navidrome and Jellyfin can't be tricked into writing into your library; the one writer (`pitune-backend`) is scoped to that one subfolder, never the rest of `music/` or any other media type. |
 | `no-new-privileges` on every container | Standard defense-in-depth. |
 | Video-ID validation in pitune-backend | YouTube video IDs are checked against `^[A-Za-z0-9_-]{11}$` before reaching a `yt-dlp` command line, so a crafted ID can't be parsed as a CLI flag. |
 | Each product manages its own accounts | PiHub doesn't invent a login system: Navidrome and Jellyfin keep their own, and PiTune's UI just forwards Subsonic credentials to Navidrome. |
-| `.env` never committed | See `.gitignore`. Holds `API_TOKEN` now, in addition to paths/ports; keep it out of git regardless, as always. |
+| `.env` never committed | See `.gitignore`. Holds `API_TOKEN` and, if you enable it, `TS_AUTHKEY`, in addition to paths/ports; keep it out of git regardless, as always. |
+| Tailscale ACL allow-list (`../tailscale/acl-policy.hujson`), off by default | Only used if you opt into the `tailscale` profile; see [Remote access via Tailscale](#remote-access-via-tailscale-optional). Grants only `tag:approved-device` sources access to `tag:pihub-server:443`, a tag scoped to this stack alone, not the whole node and not shared with home-drive/PiTune. |
+| `tailscale-preflight` container, only in the `tailscale` profile | Refuses to let `tailscale` start at all if `API_TOKEN` is unset; see [Remote access via Tailscale](#remote-access-via-tailscale-optional). A hard gate, not just a warning, specifically because this profile is what turns "unauthenticated homepage control-plane" from a LAN-only convenience into a remote exposure. |
 
 **`NAVIDROME_PORT`/`JELLYFIN_PORT` have no proxy in front of them.** Unlike
 the nginx-fronted routes, these direct ports are the services' own bare HTTP
@@ -291,7 +553,82 @@ sudo ufw deny 4533/tcp
 sudo ufw deny 8096/tcp           # only reachable from that subnet now
 ```
 
+## Remote access via Tailscale (optional)
+
+By default PiHub really does stop at your LAN, as the Security model above
+says. If you also want to reach it from outside the house, without opening
+any port on your router, an optional `tailscale` profile is included:
+
+```bash
+cp .env.example .env   # if you haven't already
+nano .env               # set API_TOKEN and TS_AUTHKEY (see below); leave TS_HOSTNAME/TS_EXTRA_ARGS as-is
+pihub start tailscale    # or: docker compose --profile tailscale up -d tailscale
+```
+
+This starts one extra container that joins your tailnet and, over that
+private WireGuard network only, serves PiHub's existing central nginx
+(homepage, `/pitune/`, `/jellyfin/`, everything already behind `PIHUB_PORT`)
+at `https://<TS_HOSTNAME>.<your-tailnet>.ts.net/`. `PIHUB_PORT` keeps working
+on the LAN exactly as before; this is an additional way in, not a
+replacement.
+
+**`API_TOKEN` is a hard prerequisite, not just a recommendation, for this
+profile.** A `tailscale-preflight` container runs before `tailscale` starts
+and refuses to let it come up at all if `API_TOKEN` is unset, because once
+homepage's start/stop/restart/logs endpoints are reachable from outside the
+LAN, "no auth configured yet" stops being a quick-local-test convenience and
+becomes an open remote control-plane. `docker compose --profile tailscale
+up -d` fails loudly with an explanation in that case rather than starting
+anyway.
+
+**Before you enable this, more has to happen on Tailscale's side first, not
+just in this repo:**
+
+1. Apply [`../tailscale/acl-policy.hujson`](../tailscale/acl-policy.hujson)
+   to your tailnet's ACL (Tailscale admin console → Access Controls). Skip
+   this and joining the tailnet exposes *every* open port on the Pi,
+   including `NAVIDROME_PORT` and `JELLYFIN_PORT`, to any device on your
+   tailnet, not just the one path above. See
+   [`../tailscale/docs/DEVICE-ONBOARDING.md`](../tailscale/docs/DEVICE-ONBOARDING.md)'s
+   "One-time tailnet setup" step 2 for the full click-by-click walkthrough
+   of that page, including what to do if this tailnet already has other
+   ACL rules you don't want to lose.
+2. Get a `TS_AUTHKEY` (prefer non-reusable, short expiry; see the comment
+   in `.env.example` for why that's enough) and, ideally, turn on device
+   approval so a new device can't reach anything until you've approved it.
+   The full reasoning for why "must be set up on the LAN first" isn't
+   something Tailscale checks literally, and what actually delivers that
+   property instead, is written up in
+   [`../tailscale/docs/DEVICE-ONBOARDING.md`](../tailscale/docs/DEVICE-ONBOARDING.md).
+3. In the browser, the first mutating action you take (start/stop/restart,
+   viewing logs) will prompt you once for the API token: paste the same
+   value you put in `API_TOKEN` above. It's then remembered in that
+   browser's own `localStorage`, never fetched from the server automatically;
+   see `homepage/README.md`'s security model for why.
+
+See [`../tailscale/README.md`](../tailscale/README.md) for the full
+picture, including why the ACL grants only `tag:pihub-server:443` (a
+separate tag per stack, not one shared tag for everything, so a device can
+be scoped to just this stack if you want) rather than opening the whole
+node, and why a static device allow-list, not a live concurrent-connection
+counter, is the actual "only these devices, only this many" control here.
+`nginx/nginx.conf`'s `limit_conn` (20 per source IP) is a narrower,
+complementary safety net on top of that, and, worth knowing, only a true
+per-device cap for direct LAN clients; over Tailscale it becomes an
+aggregate cap across all tailnet traffic, since `tailscale serve` itself
+hides the original client's IP at that layer (see the comment above
+`limit_conn_zone` in that file).
+
 ## Troubleshooting
+
+**Browsing `http://<pi-ip>/` shows Nextcloud, not PiHub's dashboard.**
+`PIHUB_PORT` and home-drive's `NEXTCLOUD_PORT` both default to 80; if
+both stacks run on the same Pi, whichever came up first keeps the port
+and the other's nginx never binds. `setup.sh` now refuses to start with
+a clear message when this happens, but if you're hitting it after the
+fact: set `PIHUB_PORT` to something else (e.g. `8080`) in `.env`, then
+`docker compose up -d nginx`. PiHub becomes reachable at
+`http://<pi-ip>:8080/`.
 
 **A product shows "not found" on the dashboard.** Its container was never
 created, almost always because `MEDIA_ROOT` (or one of its subfolders) was
@@ -317,6 +654,17 @@ wrong-password response.
 **`pihub stop jellyfin` (or any command) errors about an unknown service.**
 Make sure you're running the `pihub` script from this checkout (or via the
 symlink described above); it needs `docker-compose.yml` next to it.
+
+**`setup.sh` fails with `mkdir: cannot create directory ... Permission
+denied`, once per subfolder.** `MEDIA_ROOT` was created with `sudo mkdir`,
+leaving it root-owned; `setup.sh` itself runs as your normal user, not
+root, so it can't write into it. Fix ownership and re-run (no `sudo` needed
+for `setup.sh` itself):
+
+```bash
+sudo chown $(id -u):$(id -g) /mnt/data/pihub
+bash scripts/setup.sh
+```
 
 ## Future services
 
@@ -348,8 +696,14 @@ pihub/
 │   └── config/               # persisted Jellyfin config (gitignored)
 ├── navidrome/
 │   └── data/                 # persisted Navidrome database (gitignored)
+├── tailscale/
+│   └── serve.json             # optional profile — see Remote access via Tailscale
 └── scripts/
     ├── setup.sh
     ├── update-yt-dlp.sh
     └── backup.sh             # backs up configs, not media
 ```
+
+See also [`../tailscale/`](../tailscale/) at the repo root: the shared ACL
+policy and device-onboarding docs used by every stack's Tailscale profile,
+not just this one.

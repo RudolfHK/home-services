@@ -12,14 +12,22 @@
 #                  (see frontend/src/components/ServiceCard.js — unknown
 #                  keys just fall back to a generic dot, so a typo here
 #                  never breaks the card).
-#   containers     List of actual container names this product is made of.
-#                  ALL of them are queried and start/stop/restart acts on
-#                  ALL of them together — this is what lets PiTune show as
-#                  one card even though it's three containers.
+#   containers     List of actual Docker container names this product is
+#                  made of. docker_monitor.py passes these straight to
+#                  docker-py's containers.get(), which matches a container's
+#                  real name, NOT its docker-compose.yml service key. Every
+#                  service in this compose file sets an explicit
+#                  container_name (see docker-compose.yml), so this must be
+#                  that value (e.g. "pihub-jellyfin", not "jellyfin") or
+#                  every status/start/stop/logs call 404s against
+#                  docker-proxy. ALL of them are queried and start/stop/
+#                  restart acts on ALL of them together; this is what lets
+#                  PiTune show as one card even though it's three containers.
 #   compose_service  Shorthand for containers: [<compose_service>] — use
 #                  this instead of `containers` for a single-container
-#                  product (see jellyfin below). If both are given,
-#                  `containers` wins.
+#                  product (see jellyfin below); same container_name
+#                  requirement applies. If both are given, `containers`
+#                  wins.
 #   health_url     Where THIS backend reaches the service directly, over
 #                  the Docker compose network (a service name, not
 #                  "localhost" — "localhost" inside this container means
@@ -39,7 +47,7 @@ services:
     name: PiTune
     description: Local music library + YouTube audio streaming
     icon: music
-    containers: [navidrome, pitune-backend, pitune-frontend]
+    containers: [pihub-navidrome, pihub-pitune-backend, pihub-pitune-frontend]
     # Not /rest/ping.view: Subsonic's ping endpoint requires signed auth
     # params, and this check has no user's credentials to sign with. "/"
     # serves Navidrome's own SPA shell with no auth required — same check
@@ -52,7 +60,7 @@ services:
     name: Jellyfin
     description: Movies & TV streaming
     icon: film
-    compose_service: jellyfin
+    compose_service: pihub-jellyfin
     health_url: http://jellyfin:8096
     health_endpoint: /health
     launch_url: /jellyfin/

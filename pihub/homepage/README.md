@@ -7,10 +7,10 @@ and start/stop/restart/logs controls, all driven by one YAML file, so
 adding a future service never means touching code.
 
 Replaces PiHub's earlier `dashboard/` + `management-api/` pair with one
-config-driven service. If you're looking for `home-drive`'s own
-`healthcheck.sh`/`health-dashboard.sh`, that's a separate, independent
-project with its own monitoring (Tailscale, FileBrowser, CouchDB,
-Nextcloud); this dashboard doesn't touch it, on purpose. See
+config-driven service. `home-drive` (Nextcloud) is a separate, independent
+project; this dashboard doesn't monitor it, on purpose, PiMonitor's file
+activity aside, which only ever reads the media library's files, never
+anything about home-drive's own containers, database, or config. See
 [Why this design](#why-this-design).
 
 ## Architecture
@@ -67,13 +67,17 @@ under `/` to it; see `../nginx/nginx.conf`.
   Both are cached for an hour and only run when you click **Check for
   updates**. Polling either one every 10-15 seconds would just get you
   rate-limited for no benefit.
-- **`home-drive` is left alone, deliberately.** It's a separate product
-  monitoring a separate stack (Tailscale, FileBrowser, CouchDB, Nextcloud)
-  that may not even run on the same Pi as PiHub. Folding its checks in
-  here would mean this dashboard's backend needs to know about CouchDB and
-  Nextcloud, which has nothing to do with PiTune or Jellyfin. If you *do*
-  run both on one Pi, home-drive's own `health-dashboard.sh` is still the
-  right tool for its own stack; this one doesn't replace it.
+- **`home-drive`'s own containers, database, and config are left alone,
+  deliberately.** It's a separate product (Nextcloud) that may not even
+  run on the same Pi as PiHub. Folding its container/service health in
+  here would mean this dashboard's backend needs to know about Nextcloud,
+  which has nothing to do with PiTune or Jellyfin. PiMonitor's file
+  activity is the one deliberate exception, and only in the narrow sense
+  that it can read whatever's on disk under `MEDIA_LIBRARY_ROOT`, which may
+  physically be a folder inside home-drive's Nextcloud data directory (see
+  `../README.md`'s "Mounting a Nextcloud folder as your media library").
+  That's a read of files, not a check of home-drive's health; home-drive
+  is still a fully independent stack from PiHub's point of view.
 
 ## Quick start (as part of PiHub)
 
@@ -119,7 +123,7 @@ services:
     name: PiTune
     description: Local music library + YouTube audio streaming
     icon: music
-    containers: [navidrome, pitune-backend, pitune-frontend]   # all 3 = one card
+    containers: [pihub-navidrome, pihub-pitune-backend, pihub-pitune-frontend]   # all 3 = one card
     health_url: http://navidrome:4533   # Docker-network address, NOT localhost
     health_endpoint: /
     launch_url: /pitune/                # what the "Open" button opens
@@ -127,8 +131,16 @@ services:
 
 `containers` is a list on purpose: PiTune is three containers that PiHub
 treats as one product everywhere else (the CLI, the old management-api,
-and now here). `compose_service: jellyfin` is just shorthand for
-`containers: [jellyfin]` when a product really is one container.
+and now here). `compose_service: pihub-jellyfin` is just shorthand for
+`containers: [pihub-jellyfin]` when a product really is one container.
+Both fields take the container's actual `container_name` from
+`docker-compose.yml`, not its compose service key; those differ here
+(every service sets an explicit `container_name`), and `health_url` right
+above is the one field in this example that correctly *does* use the
+service key instead, since that's what Docker's own embedded DNS resolves
+on the compose network. Mixing the two up is the single easiest way to
+break this file: a container name that's off by that prefix 404s against
+docker-proxy for every status/start/stop/logs call.
 
 **`health_url` is not `launch_url`.** `health_url` is how *this backend*
 reaches the service directly over the Docker compose network (a service
@@ -147,6 +159,48 @@ their first visit; see `frontend/src/app.js`), poll intervals, and the
 warning thresholds shown in the health panel (deliberately the same numbers
 `home-drive`'s own monitoring uses, not a second copy that could drift).
 
+### PiMonitor
+
+The "PiMonitor" button in the sidebar opens a modal with two tiers, backed
+by `backend/monitor.py`:
+
+- **Default** (loads automatically, no token needed): mounted media drive
+  usage. Cheap, so it's fine to load every time the modal opens.
+- **Advanced** (explicit buttons, needs `API_TOKEN`): file activity (a
+  snapshot of the library, by folder, plus the most recently changed
+  files, time- and count-boxed and cached for `MONITOR_SCAN_CACHE_SECONDS`
+  so it isn't a full walk on every click) and user activity (who's
+  currently playing what, via Jellyfin's `/Sessions` and Navidrome's
+  `getNowPlaying.view`). Neither Jellyfin nor Navidrome credentials are
+  required for the rest of this stack to work; leaving `JELLYFIN_API_KEY`
+  or `NAVIDROME_MONITOR_USER`/`NAVIDROME_MONITOR_PASSWORD` unset just
+  reports that half as "not configured" instead of failing.
+
+Setting `NAVIDROME_MONITOR_USER`/`NAVIDROME_MONITOR_PASSWORD` in `.env`
+does not by itself create anything: Navidrome keeps its own user
+database, entirely separate from this stack's `.env`, so those values
+are only what `monitor.py` will *try* when it calls Navidrome's
+Subsonic API. Log in to Navidrome would fail "unauthorized" with them
+until a matching account actually exists there. To set one up:
+
+1. Log in to Navidrome at `http://<pi-ip>:4533/` as an admin (your
+   first-ever Navidrome account, from the Quick start's manual steps,
+   is automatically one).
+2. **Settings → Users → Create User.** Give it a username and password
+   matching what you put (or will put) in `.env` exactly, and leave
+   **Admin** unchecked: this account only ever calls
+   `getNowPlaying.view`, so it doesn't need more than that.
+3. Put those same values in `NAVIDROME_MONITOR_USER`/
+   `NAVIDROME_MONITOR_PASSWORD` in `.env`, then restart the container
+   that reads them: `./pihub restart homepage` (a plain `.env` edit
+   doesn't reach an already-running container).
+
+`LIBRARY_PATH` (the file-activity scan target) tracks `MEDIA_LIBRARY_ROOT`
+when set, unlike `MEDIA_PATH` (used for drive-capacity stats), which is
+always the physical `MEDIA_ROOT` mount; see `../README.md`'s "Mounting a
+Nextcloud folder as your media library" for why a redirected library and
+the physical drive it doesn't live on aren't the same thing.
+
 ## API reference
 
 | Endpoint | What it does |
@@ -157,6 +211,9 @@ warning thresholds shown in the health panel (deliberately the same numbers
 | `GET /api/services/{id}/logs?lines=200` | Last N lines from one container |
 | `GET /api/system/stats` | CPU%, temp, RAM, disk (media + boot), Pi uptime |
 | `GET /api/system/updates` | On-demand: yt-dlp version + Docker image freshness, cached 1h |
+| `GET /api/monitor/drive` | PiMonitor default tier: mounted media drive usage |
+| `GET /api/monitor/file-activity?rescan=false` | PiMonitor advanced tier: library snapshot + recently changed files (needs `API_TOKEN`) |
+| `GET /api/monitor/user-activity` | PiMonitor advanced tier: current Jellyfin/Navidrome playback (needs `API_TOKEN`) |
 | `GET /api/config/settings` | Serves `settings.yml` to the frontend |
 
 ## Security model
@@ -166,6 +223,7 @@ warning thresholds shown in the health panel (deliberately the same numbers
 | No raw Docker socket in this container | `DOCKER_HOST` points at `docker-proxy` (a `tecnativa/docker-socket-proxy` sidecar that holds the actual mounted socket), which forwards only container/image/registry read+lifecycle endpoints. `EXEC=0`, `NETWORKS=0`, `VOLUMES=0`, and everything else this stack doesn't use is off. A bug or a compromised dependency in this process only gets what the proxy allows through, not the whole Docker API. See `docker-compose.yml`'s `docker-proxy` service and `backend/docker_monitor.py`'s module docstring. |
 | `config/services.yml`'s fixed container list | On top of the proxy: every start/stop/restart/logs action resolves a container name from there, never from a request. Even the endpoints the proxy does allow are never reachable with an arbitrary name. |
 | `API_TOKEN` on every mutating endpoint | Without it, start/stop/restart/logs have no auth at all, and a plain unauthenticated POST is a "simple request" a browser will send cross-origin regardless of CORS. CORS only ever gates whether the response can be *read*, not whether the request is *sent*. A required custom header forces a preflight, which a non-wildcard `CORS_ORIGINS` then actually blocks for any other origin. `scripts/setup.sh` generates one; see `backend/main.py`'s `CORS_ORIGINS`/`API_TOKEN` comments for the full reasoning, including its honest limit: this stops a malicious *webpage*, not a compromised device with direct LAN access, which has no browser and thus no CORS to enforce in the first place. |
+| No server-side "fetch the current token" endpoint | The backend never hands `API_TOKEN` back over the network to anyone who asks, since that would be readable by any direct (non-browser) request regardless of `CORS_ORIGINS`, which only constrains browser JS. The frontend instead asks a human to paste the token once (`frontend/src/app.js`'s `promptForToken()`) and keeps it in that browser's own `localStorage`. This matters specifically because of the `../tailscale/` profile: once "anyone who can reach this port" includes devices outside your house, an endpoint that freely hands out the token stops being a theoretical gap. |
 | `CORS_ORIGINS` empty by default, not `*` | The frontend and this API are always same-origin (one container, reached through nginx), so legitimate use never needs a cross-origin allowance. There's no reason to widen this unless you have a specific, understood need to. |
 | Security headers (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, a strict `Content-Security-Policy`) | Set both here (so the standalone deployment, with no nginx in front, is still protected) and at PiHub's central nginx (which hides this app's copies to avoid sending duplicates; see `../nginx/nginx.conf`). The CSP is safe to make this strict specifically because this frontend has no external images, no inline scripts/styles, and one same-origin API. |
 | `/hostroot` mounted read-only | Exists only so `shutil.disk_usage()` can report boot-drive space, which never reads file contents, only filesystem-level stat. Still the broadest mount in this stack; comment it out (and the `BOOT_PATH` code path in `backend/system_stats.py`) if you'd rather not have it, at the cost of losing that one stat. |
@@ -192,9 +250,13 @@ fail even while the real, browser-facing route works. Point
 
 **Start/stop/restart/logs return 401.** `API_TOKEN` is set but the request
 didn't include a matching `X-PiHub-Token` header. That's normal if you're
-calling the API directly (curl, a script); the frontend handles this itself
-by fetching `/api/auth/token` once at load. If it's happening *in the
-browser*, check the browser console for the `/api/auth/token` call failing.
+calling the API directly (curl, a script): pass `-H "X-PiHub-Token: $API_TOKEN"`
+yourself. In the browser, this should trigger a one-time prompt asking you
+to paste the token (see `frontend/src/app.js`'s `promptForToken()`). If it
+keeps happening after you've entered it correctly, the value saved in this
+browser's `localStorage` doesn't match the current `API_TOKEN` (e.g. it was
+rotated in `.env` since); clear `localStorage` for this site or just retry
+the action to be re-prompted.
 
 **Stats show "not mounted" for the boot drive.** `/hostroot` isn't bind
 -mounted, either because it was deliberately commented out (see Security
@@ -216,7 +278,8 @@ homepage/
 │   ├── main.py                # FastAPI app, routes, config loading
 │   ├── docker_monitor.py      # container status/start/stop/restart/logs/image-check
 │   ├── health_checker.py      # HTTP checks + in-memory failure/response-time history
-│   └── system_stats.py        # CPU/RAM/disk/temp/uptime + yt-dlp version check
+│   ├── system_stats.py        # CPU/RAM/disk/temp/uptime + yt-dlp version check
+│   └── monitor.py             # PiMonitor: drive health, file activity, user activity
 └── frontend/
     └── src/
         ├── index.html
@@ -225,6 +288,7 @@ homepage/
         │   ├── ServiceCard.js
         │   ├── SystemStats.js
         │   ├── HealthPanel.js
-        │   └── LogViewer.js
+        │   ├── LogViewer.js
+        │   └── MonitorPanel.js
         └── styles/main.css
 ```
