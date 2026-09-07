@@ -375,7 +375,14 @@
   }
 
   document.getElementById("btn-playpause").addEventListener("click", () => {
-    if (!audio.src) return;
+    if (!audio.src) {
+      // Nothing loaded yet; most often songs were queued via "Add to
+      // queue" (which deliberately doesn't start playback) and Play is the
+      // first thing pressed. Start from the front of the queue instead of
+      // silently doing nothing.
+      if (queue.length) playIndex(0);
+      return;
+    }
     if (audio.paused) audio.play(); else audio.pause();
   });
   document.getElementById("btn-next").addEventListener("click", () => playIndex(queueIndex + 1));
