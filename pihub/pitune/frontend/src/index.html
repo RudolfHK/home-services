@@ -40,8 +40,18 @@
       </div>
 
       <div id="library-browser" class="browser hidden">
-        <div class="breadcrumbs" id="library-breadcrumbs"></div>
-        <ul class="item-list" id="library-list"></ul>
+        <nav class="library-sidebar">
+          <button class="library-nav-btn" data-section="songs">Songs</button>
+          <button class="library-nav-btn" data-section="albums">Albums</button>
+          <button class="library-nav-btn active" data-section="artists">Artists</button>
+          <button class="library-nav-btn" data-section="favorites">Favorites</button>
+          <button class="library-nav-btn" data-section="recent">Recently Added</button>
+          <button class="library-nav-btn" data-section="playlists">Playlists</button>
+        </nav>
+        <div class="library-content">
+          <div class="breadcrumbs" id="library-breadcrumbs"></div>
+          <ul class="item-list" id="library-list"></ul>
+        </div>
       </div>
     </section>
 

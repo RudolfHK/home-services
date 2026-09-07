@@ -100,6 +100,24 @@ main {
 }
 .breadcrumbs button { padding: 0.2em 0.5em; font-size: 0.9em; }
 
+.browser { display: flex; gap: 1.25em; align-items: flex-start; }
+.library-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+  flex-shrink: 0;
+  width: 150px;
+}
+.library-nav-btn {
+  text-align: left;
+  border-color: transparent;
+  background: transparent;
+}
+.library-nav-btn.active { background: var(--bg-elevated); color: var(--accent); border-color: var(--border); }
+.library-content { flex: 1; min-width: 0; }
+.library-section-hint { color: var(--text-dim); font-size: 0.85em; margin-bottom: 0.75em; }
+.library-action-row { padding: 0.3em 0.5em 0.75em; }
+
 .item-list {
   list-style: none;
   margin: 0;
@@ -148,7 +166,15 @@ main {
 .item-sub { color: var(--text-dim); font-size: 0.85em; }
 .item-duration { color: var(--text-dim); font-size: 0.85em; flex-shrink: 0; }
 .item-action { flex-shrink: 0; }
-.item-queue, .item-save { font-size: 1.1em; line-height: 1; }
+.item-queue, .item-save, .item-star, .item-playlist-add { font-size: 1.1em; line-height: 1; }
+.item-star { color: var(--text-dim); }
+.item-star.starred { color: var(--accent); border-color: var(--accent); }
+.save-progress {
+  width: 60px;
+  height: 6px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
 
 /* ── Player bar ──────────────────────────────────────────────────────── */
 .player-bar {
@@ -190,4 +216,6 @@ main {
   .player-bar { flex-direction: column; align-items: stretch; gap: 0.5em; }
   .progress, .volume { flex: 1 1 auto; }
   .topbar { gap: 0.75em; }
+  .browser { flex-direction: column; }
+  .library-sidebar { flex-direction: row; flex-wrap: wrap; width: auto; }
 }

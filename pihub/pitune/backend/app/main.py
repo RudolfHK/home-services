@@ -16,6 +16,14 @@ an otherwise-unbounded "every song ever streamed" cache.
 This still never redirects the browser to the raw googlevideo.com URL
 yt-dlp resolves; that URL is only valid for the IP that requested it
 (this container, not the browser), so redirecting would just 403.
+
+/api/save/{id} (saving a track into the library) is fire-and-forget: the
+POST starts the download as a background task and returns immediately,
+rather than blocking the request for the whole download+MP3-reencode. The
+frontend polls GET /api/save/{id}/status, backed by yt-dlp's own
+progress_hooks, to show a real progress bar and to tell an actual failure
+apart from "still working" instead of guessing from a single request
+timing out.
 """
 
 import asyncio
@@ -23,6 +31,7 @@ import logging
 import os
 import re
 import secrets
+import threading
 from pathlib import Path
 
 import yt_dlp
@@ -97,6 +106,19 @@ _EXT_MIME = {"webm": "audio/webm", "m4a": "audio/mp4", "mp3": "audio/mpeg", "opu
 # module docstring): this cache is meant to disappear on every restart.
 _STREAM_CACHE_DIR = Path("/tmp/pitune-stream-cache")
 _STREAM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# In-memory only, keyed by video_id: {"status": "downloading"|"processing"|
+# "done"|"error", "percent": float|None, "error": str|None}. Lost on
+# restart, which is fine; nothing durable depends on it, it only exists so
+# /api/save/{id}/status has something to poll while a save runs. The lock
+# guards against a hook running in the download's own thread racing the
+# event loop's read of the same dict.
+_SAVE_PROGRESS: dict = {}
+_SAVE_PROGRESS_LOCK = threading.Lock()
+
+# Holds references to fire-and-forget save tasks so asyncio can't garbage
+# collect one mid-download (a real risk for a Task nothing else holds onto).
+_background_tasks: set = set()
 
 app = FastAPI(title="PiTune backend")
 app.add_middleware(
@@ -207,6 +229,50 @@ async def stream(video_id: str = PathParam(..., min_length=11, max_length=11)):
     return FileResponse(path, media_type=media_type)
 
 
+async def _download_to_library(video_id: str) -> None:
+    """Runs in a thread (see the endpoint below). Reports progress into
+    _SAVE_PROGRESS via yt-dlp's own progress_hooks so /api/save/{id}/status
+    has something to poll; a plain synchronous download+return gave the
+    frontend no way to show a progress bar or distinguish "still working"
+    from "hung"."""
+    def hook(d):
+        if d.get("status") == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            downloaded = d.get("downloaded_bytes", 0)
+            percent = (downloaded / total * 100) if total else None
+            with _SAVE_PROGRESS_LOCK:
+                _SAVE_PROGRESS[video_id] = {"status": "downloading", "percent": percent, "error": None}
+        elif d.get("status") == "finished":
+            # Download itself is done; FFmpegExtractAudio (mp3 re-encode)
+            # still runs after this hook fires, so not "done" quite yet.
+            with _SAVE_PROGRESS_LOCK:
+                _SAVE_PROGRESS[video_id] = {"status": "processing", "percent": None, "error": None}
+
+    def _download() -> str:
+        opts = {
+            **_BASE_OPTS,
+            "format": "bestaudio/best",
+            "outtmpl": str(MUSIC_SAVE_PATH / "%(uploader)s - %(title)s.%(ext)s"),
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }],
+            "progress_hooks": [hook],
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(_video_url(video_id), download=True)
+        return info.get("title", video_id)
+
+    try:
+        title = await asyncio.to_thread(_download)
+        with _SAVE_PROGRESS_LOCK:
+            _SAVE_PROGRESS[video_id] = {"status": "done", "percent": 100.0, "title": title, "error": None}
+    except yt_dlp.utils.DownloadError as exc:
+        with _SAVE_PROGRESS_LOCK:
+            _SAVE_PROGRESS[video_id] = {"status": "error", "percent": None, "error": str(exc)}
+
+
 @app.post("/api/save/{video_id}", dependencies=[Depends(require_token)])
 async def save_to_library(video_id: str = PathParam(..., min_length=11, max_length=11)):
     video_id = _validate_video_id(video_id)
@@ -219,27 +285,33 @@ async def save_to_library(video_id: str = PathParam(..., min_length=11, max_leng
     if not MUSIC_SAVE_PATH.is_dir():
         raise HTTPException(status_code=500, detail=f"{MUSIC_SAVE_PATH} is not mounted")
 
-    def _download() -> str:
-        opts = {
-            **_BASE_OPTS,
-            "format": "bestaudio/best",
-            "outtmpl": str(MUSIC_SAVE_PATH / "%(uploader)s - %(title)s.%(ext)s"),
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }],
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(_video_url(video_id), download=True)
-        return info.get("title", video_id)
+    with _SAVE_PROGRESS_LOCK:
+        current = _SAVE_PROGRESS.get(video_id)
+        if current and current["status"] in ("downloading", "processing"):
+            return {"started": False, "detail": "Already downloading"}
+        _SAVE_PROGRESS[video_id] = {"status": "downloading", "percent": 0.0, "error": None}
 
-    try:
-        title = await asyncio.to_thread(_download)
-    except yt_dlp.utils.DownloadError as exc:
-        raise HTTPException(status_code=502, detail=f"Download failed: {exc}")
+    # Fire-and-forget: the frontend polls /status for progress instead of
+    # waiting on this request, so it can show a progress bar and let the
+    # user keep browsing/playing while a save runs. _background_tasks holds
+    # a reference so the task can't be garbage-collected mid-download (a
+    # real risk for a task nothing else references; see asyncio's own
+    # docs on this).
+    task = asyncio.ensure_future(_download_to_library(video_id))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
-    return {"saved": True, "title": title}
+    return {"started": True}
+
+
+@app.get("/api/save/{video_id}/status")
+async def save_status(video_id: str = PathParam(..., min_length=11, max_length=11)):
+    video_id = _validate_video_id(video_id)
+    with _SAVE_PROGRESS_LOCK:
+        state = _SAVE_PROGRESS.get(video_id)
+    if not state:
+        return {"status": "idle", "percent": None, "error": None}
+    return state
 
 
 # ── Discover: not implemented yet ───────────────────────────────────────

@@ -124,6 +124,20 @@
     getArtists() { return this.call("getArtists"); },
     getArtist(id) { return this.call("getArtist", { id }); },
     getAlbum(id) { return this.call("getAlbum", { id }); },
+    getRandomSongs(size) { return this.call("getRandomSongs", { size }); },
+    getAlbumList2(type, size) { return this.call("getAlbumList2", { type, size }); },
+    getStarred2() { return this.call("getStarred2"); },
+    star(id) { return this.call("star", { id }); },
+    unstar(id) { return this.call("unstar", { id }); },
+    getPlaylists() { return this.call("getPlaylists"); },
+    getPlaylist(id) { return this.call("getPlaylist", { id }); },
+    createPlaylist(name) { return this.call("createPlaylist", { name }); },
+    // songIdToAdd is deliberately singular here (one song at a time);
+    // Subsonic supports repeating this param to add several at once, but
+    // nothing in this app's UI batches adds, so there's only ever one.
+    addToPlaylist(playlistId, songId) {
+      return this.call("updatePlaylist", { playlistId, songIdToAdd: songId });
+    },
   };
 
   // ── Helpers ─────────────────────────────────────────────────────────
@@ -289,27 +303,63 @@
   }
 
   // Explicit, user-triggered save from a YouTube search result (the ⬇
-  // button); unlike maybeAutoSaveToLibrary above, which fires silently
-  // once a track finishes playing naturally, this one gives visible
-  // feedback directly on the button, since the user asked for it.
+  // button); unlike maybeAutoSaveToLibrary above, which fires silently once
+  // a track finishes playing naturally, this one shows a real progress bar
+  // (backed by GET /api/save/{id}/status, which the backend fills in from
+  // yt-dlp's own progress_hooks) and turns into a retry button on failure,
+  // since the user has to be looking at this one.
   async function saveToLibraryManually(videoId, button) {
-    const original = button.textContent;
     button.disabled = true;
-    button.textContent = "…";
+    const row = button.closest("li");
+    const progress = document.createElement("progress");
+    progress.className = "save-progress";
+    progress.max = 100;
+    row.appendChild(progress);
+
+    const setLabel = (text, title) => { button.textContent = text; button.title = title; };
+    setLabel("…", "Starting download…");
+
     try {
-      const res = await postSaveToLibrary(videoId);
-      if (res.ok) {
-        button.textContent = "✓";
-        button.title = "Saved to library";
-        autoSavedVideoIds.add(videoId); // skip a redundant auto-save if played to completion later
-      } else {
-        const detail = await res.text();
-        throw new Error(detail || `HTTP ${res.status}`);
+      const startRes = await postSaveToLibrary(videoId);
+      if (!startRes.ok) {
+        throw new Error((await startRes.text()) || `HTTP ${startRes.status}`);
+      }
+
+      // Polls until the backend reports a terminal state. There's no
+      // server push here (SSE/WebSocket) on purpose; a few requests a
+      // second for the handful of seconds a save takes isn't worth the
+      // extra moving part on a Pi-scale, single-user app.
+      for (;;) {
+        const statusRes = await fetch(`api/save/${videoId}/status`);
+        const state = await statusRes.json();
+
+        if (state.status === "downloading") {
+          if (state.percent != null) progress.value = state.percent;
+          else progress.removeAttribute("value"); // indeterminate: no total size reported yet
+          setLabel(state.percent != null ? `${Math.round(state.percent)}%` : "…", "Downloading…");
+        } else if (state.status === "processing") {
+          progress.removeAttribute("value");
+          setLabel("…", "Converting to MP3…");
+        } else if (state.status === "done") {
+          progress.remove();
+          setLabel("✓", "Saved to library");
+          autoSavedVideoIds.add(videoId); // skip a redundant auto-save if played to completion later
+          return;
+        } else if (state.status === "error") {
+          throw new Error(state.error || "Download failed");
+        } else {
+          // "idle": the backend has no memory of this id at all, which
+          // right after a successful start should never happen.
+          throw new Error("Lost track of the download");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 700));
       }
     } catch (err) {
-      button.textContent = "✕";
-      button.title = `Save failed: ${err.message}`;
-      setTimeout(() => { button.textContent = original; button.title = "Save to library"; button.disabled = false; }, 4000);
+      progress.remove();
+      // Left enabled, unlike a plain error message: clicking this again
+      // calls this same function again, i.e. IS the retry.
+      setLabel("⟳", `Save failed: ${err.message} (click to retry)`);
+      button.disabled = false;
     }
   }
 
@@ -439,7 +489,131 @@
     list.appendChild(li);
   }
 
+  // Shared by every section that lists actual songs (Songs, Favorites,
+  // Recently Added's drill-down, a playlist's contents, an album's
+  // contents): star/unstar plus add-to-playlist, identical everywhere a
+  // song row shows up. `starred` is a local closure variable, not read back
+  // off `song` on every click, since buildRow() snapshots icon/title once
+  // at creation; toggling has to update the button directly instead.
+  function songRowActions(song) {
+    let starred = !!song.starred;
+    return [
+      {
+        icon: starred ? "★" : "☆",
+        title: starred ? "Remove from favorites" : "Add to favorites",
+        className: starred ? "item-star starred" : "item-star",
+        onClick: async (btn) => {
+          btn.disabled = true;
+          try {
+            if (starred) await Subsonic.unstar(song.id); else await Subsonic.star(song.id);
+            starred = !starred;
+            btn.textContent = starred ? "★" : "☆";
+            btn.title = starred ? "Remove from favorites" : "Add to favorites";
+            btn.classList.toggle("starred", starred);
+          } catch (err) {
+            alert("Could not update favorite: " + err.message);
+          } finally {
+            btn.disabled = false;
+          }
+        },
+      },
+      { icon: "📋", title: "Add to playlist", className: "item-playlist-add", onClick: () => addSongToPlaylist(song) },
+    ];
+  }
+
+  // Deliberately prompt()-based rather than a proper picker dialog; the
+  // simplest thing that actually works for "create a playlist, then add
+  // songs to it", which is the ground floor this needs before anything
+  // fancier (rename, reorder, multi-select add) is worth building.
+  async function addSongToPlaylist(song) {
+    let playlists;
+    try {
+      const data = await Subsonic.getPlaylists();
+      playlists = (data.playlists && data.playlists.playlist) || [];
+    } catch (err) {
+      alert("Could not load playlists: " + err.message);
+      return;
+    }
+    const listing = playlists.map((p, i) => `${i + 1}. ${p.name}`).join("\n") || "(none yet)";
+    const choice = prompt(
+      `Add "${song.title}" to which playlist?\n${listing}\n\nEnter a number above, or type a new name to create one:`
+    );
+    if (!choice || !choice.trim()) return;
+
+    const asNumber = parseInt(choice, 10);
+    let playlistId = (!isNaN(asNumber) && playlists[asNumber - 1]) ? playlists[asNumber - 1].id : null;
+    if (!playlistId) {
+      try {
+        const created = await Subsonic.createPlaylist(choice.trim());
+        playlistId = created.playlist && created.playlist.id;
+      } catch (err) {
+        alert("Could not create playlist: " + err.message);
+        return;
+      }
+    }
+    if (!playlistId) { alert("Could not determine which playlist to use."); return; }
+    try {
+      await Subsonic.addToPlaylist(playlistId, song.id);
+    } catch (err) {
+      alert("Could not add to playlist: " + err.message);
+    }
+  }
+
+  function songRow(s) {
+    return buildRow({
+      icon: "🎵",
+      title: s.title,
+      sub: s.artist,
+      durationText: s.duration ? formatTime(s.duration) : "",
+      onClick: () => enqueue({ title: s.title, artist: s.artist, src: Subsonic.streamUrl(s.id), source: "local" }),
+      actions: songRowActions(s),
+    });
+  }
+
+  function selectLibrarySection(name) {
+    document.querySelectorAll(".library-nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.section === name));
+  }
+
+  async function showSongsSection() {
+    selectLibrarySection("songs");
+    libraryStack = [{ label: "Songs", render: showSongsSection }];
+    renderBreadcrumbs();
+    try {
+      const data = await Subsonic.getRandomSongs(100);
+      const songs = (data.randomSongs && data.randomSongs.song) || [];
+      const list = document.getElementById("library-list");
+      list.innerHTML = "";
+      const hint = document.createElement("li");
+      hint.className = "library-section-hint";
+      hint.textContent = "A random sample, not your whole library: there is no Subsonic call for a flat, complete song list.";
+      list.appendChild(hint);
+      songs.forEach((s) => list.appendChild(songRow(s)));
+    } catch (err) {
+      renderLibraryError("Could not load songs: " + err.message);
+    }
+  }
+
+  async function showAlbumsSection() {
+    selectLibrarySection("albums");
+    libraryStack = [{ label: "Albums", render: showAlbumsSection }];
+    renderBreadcrumbs();
+    try {
+      const data = await Subsonic.getAlbumList2("alphabeticalByName", 500);
+      const albums = (data.albumList2 && data.albumList2.album) || [];
+      renderLibraryList(albums.map((al) => buildRow({
+        thumbUrl: al.coverArt ? Subsonic.coverArtUrl(al.coverArt) : null,
+        icon: "💿",
+        title: al.name,
+        sub: al.artist || (al.year ? String(al.year) : ""),
+        onClick: () => showAlbumSongs(al.id, al.name),
+      })));
+    } catch (err) {
+      renderLibraryError("Could not load albums: " + err.message);
+    }
+  }
+
   async function showArtists() {
+    selectLibrarySection("artists");
     libraryStack = [{ label: "Artists", render: showArtists }];
     renderBreadcrumbs();
     try {
@@ -451,15 +625,15 @@
         icon: "🎤",
         title: a.name,
         sub: `${a.albumCount || 0} album${a.albumCount === 1 ? "" : "s"}`,
-        onClick: () => showAlbums(a.id, a.name),
+        onClick: () => showArtistAlbums(a.id, a.name),
       })));
     } catch (err) {
       renderLibraryError("Could not load artists: " + err.message);
     }
   }
 
-  async function showAlbums(artistId, artistName) {
-    libraryStack.push({ label: artistName, render: () => showAlbums(artistId, artistName) });
+  async function showArtistAlbums(artistId, artistName) {
+    libraryStack.push({ label: artistName, render: () => showArtistAlbums(artistId, artistName) });
     renderBreadcrumbs();
     try {
       const data = await Subsonic.getArtist(artistId);
@@ -469,30 +643,129 @@
         icon: "💿",
         title: al.name,
         sub: al.year ? String(al.year) : "",
-        onClick: () => showSongs(al.id, al.name),
+        onClick: () => showAlbumSongs(al.id, al.name),
       })));
     } catch (err) {
       renderLibraryError("Could not load albums: " + err.message);
     }
   }
 
-  async function showSongs(albumId, albumName) {
-    libraryStack.push({ label: albumName, render: () => showSongs(albumId, albumName) });
+  async function showAlbumSongs(albumId, albumName) {
+    libraryStack.push({ label: albumName, render: () => showAlbumSongs(albumId, albumName) });
     renderBreadcrumbs();
     try {
       const data = await Subsonic.getAlbum(albumId);
       const songs = (data.album && data.album.song) || [];
-      renderLibraryList(songs.map((s) => buildRow({
-        icon: "🎵",
-        title: s.title,
-        sub: s.artist,
-        durationText: s.duration ? formatTime(s.duration) : "",
-        onClick: () => enqueue({ title: s.title, artist: s.artist, src: Subsonic.streamUrl(s.id), source: "local" }),
-      })));
+      renderLibraryList(songs.map(songRow));
     } catch (err) {
       renderLibraryError("Could not load tracks: " + err.message);
     }
   }
+
+  async function showFavorites() {
+    selectLibrarySection("favorites");
+    libraryStack = [{ label: "Favorites", render: showFavorites }];
+    renderBreadcrumbs();
+    try {
+      const data = await Subsonic.getStarred2();
+      const songs = (data.starred2 && data.starred2.song) || [];
+      if (!songs.length) {
+        renderLibraryError("No favorites yet. Star a song anywhere in the library to add one.");
+        return;
+      }
+      renderLibraryList(songs.map(songRow));
+    } catch (err) {
+      renderLibraryError("Could not load favorites: " + err.message);
+    }
+  }
+
+  async function showRecentlyAdded() {
+    selectLibrarySection("recent");
+    libraryStack = [{ label: "Recently Added", render: showRecentlyAdded }];
+    renderBreadcrumbs();
+    try {
+      const data = await Subsonic.getAlbumList2("newest", 50);
+      const albums = (data.albumList2 && data.albumList2.album) || [];
+      renderLibraryList(albums.map((al) => buildRow({
+        thumbUrl: al.coverArt ? Subsonic.coverArtUrl(al.coverArt) : null,
+        icon: "💿",
+        title: al.name,
+        sub: al.artist || (al.year ? String(al.year) : ""),
+        onClick: () => showAlbumSongs(al.id, al.name),
+      })));
+    } catch (err) {
+      renderLibraryError("Could not load recently added albums: " + err.message);
+    }
+  }
+
+  async function showPlaylists() {
+    selectLibrarySection("playlists");
+    libraryStack = [{ label: "Playlists", render: showPlaylists }];
+    renderBreadcrumbs();
+    try {
+      const data = await Subsonic.getPlaylists();
+      const playlists = (data.playlists && data.playlists.playlist) || [];
+      const list = document.getElementById("library-list");
+      list.innerHTML = "";
+
+      const createRow = document.createElement("li");
+      createRow.className = "library-action-row";
+      const createBtn = document.createElement("button");
+      createBtn.textContent = "+ New playlist";
+      createBtn.addEventListener("click", async () => {
+        const name = prompt("Name for the new playlist:");
+        if (!name || !name.trim()) return;
+        try {
+          await Subsonic.createPlaylist(name.trim());
+          showPlaylists();
+        } catch (err) {
+          alert("Could not create playlist: " + err.message);
+        }
+      });
+      createRow.appendChild(createBtn);
+      list.appendChild(createRow);
+
+      if (!playlists.length) {
+        const hint = document.createElement("li");
+        hint.className = "library-section-hint";
+        hint.textContent = "No playlists yet.";
+        list.appendChild(hint);
+        return;
+      }
+      playlists.forEach((p) => list.appendChild(buildRow({
+        icon: "📃",
+        title: p.name,
+        sub: `${p.songCount || 0} song${p.songCount === 1 ? "" : "s"}`,
+        onClick: () => showPlaylistDetail(p.id, p.name),
+      })));
+    } catch (err) {
+      renderLibraryError("Could not load playlists: " + err.message);
+    }
+  }
+
+  async function showPlaylistDetail(playlistId, name) {
+    libraryStack.push({ label: name, render: () => showPlaylistDetail(playlistId, name) });
+    renderBreadcrumbs();
+    try {
+      const data = await Subsonic.getPlaylist(playlistId);
+      const songs = (data.playlist && data.playlist.entry) || [];
+      if (!songs.length) {
+        renderLibraryError("This playlist is empty. Use a song's 📋 button anywhere in the library to add one.");
+        return;
+      }
+      renderLibraryList(songs.map(songRow));
+    } catch (err) {
+      renderLibraryError("Could not load playlist: " + err.message);
+    }
+  }
+
+  document.querySelectorAll(".library-nav-btn").forEach((btn) => {
+    const sections = {
+      songs: showSongsSection, albums: showAlbumsSection, artists: showArtists,
+      favorites: showFavorites, recent: showRecentlyAdded, playlists: showPlaylists,
+    };
+    btn.addEventListener("click", () => sections[btn.dataset.section]());
+  });
 
   // ── YouTube search ──────────────────────────────────────────────────
   document.getElementById("yt-search-form").addEventListener("submit", async (e) => {
