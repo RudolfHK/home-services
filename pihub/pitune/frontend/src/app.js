@@ -219,20 +219,79 @@
         title: track.title,
         sub: track.artist,
         onClick: () => playIndex(i),
-        actions: [{
-          icon: "✕", title: "Remove", className: "item-remove",
-          onClick: () => {
-            queue.splice(i, 1);
-            if (i < queueIndex) queueIndex--;
-            else if (i === queueIndex) { queueIndex = -1; audio.pause(); audio.removeAttribute("src"); }
-            renderQueue();
-            renderNowPlaying();
+        actions: [
+          // A no-op onClick: this button's real job is pointerdown/move/up
+          // (see attachDragHandle below), not a click. Plain HTML5
+          // draggable="true" drag-and-drop does not fire on touchscreens at
+          // all (notably not in Chrome for Android), which is a real
+          // problem for an app meant to be used from a phone; Pointer
+          // Events cover mouse, touch and pen with one code path instead.
+          { icon: "⠿", title: "Drag to reorder", className: "item-drag-handle", onClick: () => {} },
+          {
+            icon: "✕", title: "Remove", className: "item-remove",
+            onClick: () => {
+              queue.splice(i, 1);
+              if (i < queueIndex) queueIndex--;
+              else if (i === queueIndex) { queueIndex = -1; audio.pause(); audio.removeAttribute("src"); }
+              renderQueue();
+              renderNowPlaying();
+            },
           },
-        }],
+        ],
       });
       if (i === queueIndex) row.classList.add("playing");
+      // Reordering below moves these <li> elements directly (list.insertBefore),
+      // never rebuilding them mid-drag: a rebuild would drop the pointer
+      // capture the drag depends on. _track is how the commit step recovers
+      // queue[]'s new order from the DOM afterward, by object identity
+      // rather than by position (position is exactly what moved).
+      row._track = track;
       list.appendChild(row);
+      attachDragHandle(row.querySelector(".item-drag-handle"), row);
     });
+  }
+
+  // Live-reorders the DOM as the pointer crosses into another row (so what
+  // you see while dragging is already the real order, not a preview),
+  // committing queue[]/queueIndex back from the DOM's final order on
+  // release. Tracking the "now playing" row by object identity (found via
+  // indexOf, not carried as a number) is what keeps it correctly pointing at
+  // the same track even when that track is the one just dragged.
+  function attachDragHandle(handle, row) {
+    let pointerId = null;
+
+    handle.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      pointerId = e.pointerId;
+      handle.setPointerCapture(pointerId);
+      row.classList.add("dragging");
+    });
+
+    handle.addEventListener("pointermove", (e) => {
+      if (e.pointerId !== pointerId) return;
+      const list = document.getElementById("queue-list");
+      const rows = Array.from(list.children);
+      const overRow = rows.find((r) => {
+        if (r === row) return false;
+        const rect = r.getBoundingClientRect();
+        return e.clientY >= rect.top && e.clientY <= rect.bottom;
+      });
+      if (!overRow) return;
+      const draggedIsAbove = rows.indexOf(row) < rows.indexOf(overRow);
+      list.insertBefore(row, draggedIsAbove ? overRow.nextSibling : overRow);
+    });
+
+    const commitDrag = (e) => {
+      if (e.pointerId !== pointerId) return;
+      pointerId = null;
+      const list = document.getElementById("queue-list");
+      const playingTrack = queue[queueIndex];
+      queue = Array.from(list.children).map((r) => r._track);
+      queueIndex = playingTrack ? queue.indexOf(playingTrack) : -1;
+      renderQueue(); // rebuilds cleanly so every row's closures match its new index
+    };
+    handle.addEventListener("pointerup", commitDrag);
+    handle.addEventListener("pointercancel", commitDrag);
   }
 
   function renderNowPlaying() {
@@ -401,32 +460,45 @@
   // ── Library (Navidrome) ────────────────────────────────────────────
   let libraryStack = [];
 
+  // Gates the WHOLE app, not just the Library tab: before a Navidrome login
+  // is saved, YouTube search/download, the queue, and playback are all
+  // otherwise fully usable and were, previously, actually usable without
+  // ever logging in (YouTube doesn't need Navidrome at all). Locked is the
+  // default at page load (see index.html: everything but #app-lock starts
+  // with the hidden class already on it), so a slow/failed first ping never
+  // flashes the real app before locking back down.
+  function setAppLocked(locked) {
+    document.getElementById("app-lock").classList.toggle("hidden", !locked);
+    document.querySelector(".topbar").classList.toggle("hidden", locked);
+    document.querySelector("main").classList.toggle("hidden", locked);
+    document.querySelector(".player-bar").classList.toggle("hidden", locked);
+  }
+
   async function initLibrary() {
     const creds = Subsonic.load();
     if (!creds) {
-      document.getElementById("library-connection-error").classList.add("hidden");
-      document.getElementById("library-login").classList.remove("hidden");
+      setAppLocked(true);
       return;
     }
+    setAppLocked(false);
     try {
       await Subsonic.ping();
       document.getElementById("library-connection-error").classList.add("hidden");
-      document.getElementById("library-login").classList.add("hidden");
       document.getElementById("library-browser").classList.remove("hidden");
       showArtists();
     } catch (err) {
       document.getElementById("library-browser").classList.add("hidden");
       if (err.authFailed) {
-        // The saved password is actually wrong — asking again is correct.
+        // The saved password is actually wrong; back to the login gate.
         Subsonic.clear();
-        document.getElementById("library-connection-error").classList.add("hidden");
-        document.getElementById("library-login").classList.remove("hidden");
+        document.getElementById("login-pass").value = "";
+        setAppLocked(true);
         alert("Could not log in to Navidrome: " + err.message);
       } else {
         // Looks like Navidrome (or the proxy in front of it) is temporarily
-        // unreachable, not a bad password — keep the saved login and offer
-        // a retry instead of forcing the user to type it in again.
-        document.getElementById("library-login").classList.add("hidden");
+        // unreachable, not a bad password; keep the saved login, keep the
+        // rest of the app usable (YouTube/Queue don't need Navidrome), and
+        // offer a retry on just the Library tab instead of logging out.
         document.getElementById("library-connection-error-message").textContent =
           "Could not reach Navidrome: " + err.message;
         document.getElementById("library-connection-error").classList.remove("hidden");
@@ -444,15 +516,17 @@
 
   document.getElementById("library-retry").addEventListener("click", initLibrary);
 
-  // The one way back to the login form from this screen without clearing
-  // site data by hand: Subsonic.call()'s authFailed flag only fires for
-  // Subsonic error codes 40/41, so a wrong password that comes back some
-  // other way (or any other misconfiguration) leaves the saved-but-bad
-  // credentials in place forever, with Retry just re-trying the same ones.
+  // The one way back to the login gate from the connection-error screen
+  // without clearing site data by hand: Subsonic.call()'s authFailed flag
+  // only fires for Subsonic error codes 40/41, so a wrong password that
+  // comes back some other way (or any other misconfiguration) leaves the
+  // saved-but-bad credentials in place forever, with Retry just re-trying
+  // the same ones.
   document.getElementById("library-use-different-account").addEventListener("click", () => {
     Subsonic.clear();
+    document.getElementById("login-pass").value = "";
     document.getElementById("library-connection-error").classList.add("hidden");
-    document.getElementById("library-login").classList.remove("hidden");
+    setAppLocked(true);
   });
 
   function renderBreadcrumbs() {
@@ -495,7 +569,7 @@
   // song row shows up. `starred` is a local closure variable, not read back
   // off `song` on every click, since buildRow() snapshots icon/title once
   // at creation; toggling has to update the button directly instead.
-  function songRowActions(song) {
+  function songRowActions(song, track) {
     let starred = !!song.starred;
     return [
       {
@@ -517,56 +591,113 @@
           }
         },
       },
-      { icon: "📋", title: "Add to playlist", className: "item-playlist-add", onClick: () => addSongToPlaylist(song) },
+      { icon: "＋", title: "Add to queue", className: "item-queue", onClick: () => addToQueue(track) },
+      { icon: "📋", title: "Add to playlist", className: "item-playlist-add", onClick: () => openPlaylistPicker(song) },
     ];
   }
 
-  // Deliberately prompt()-based rather than a proper picker dialog; the
-  // simplest thing that actually works for "create a playlist, then add
-  // songs to it", which is the ground floor this needs before anything
-  // fancier (rename, reorder, multi-select add) is worth building.
-  async function addSongToPlaylist(song) {
-    let playlists;
+  // ── Playlist modal ───────────────────────────────────────────────────
+  // One shared dialog for both "+ New playlist" (Playlists section) and a
+  // song's 📋 button (add to an existing playlist, or create one on the
+  // spot); replaces the earlier prompt()-based version of both.
+  const playlistModal = {
+    el: document.getElementById("playlist-modal"),
+    title: document.getElementById("playlist-modal-title"),
+    hint: document.getElementById("playlist-modal-hint"),
+    list: document.getElementById("playlist-modal-list"),
+    nameInput: document.getElementById("playlist-modal-name"),
+    song: null, // set only when opened from a song's "add to playlist" button
+
+    open() { this.el.classList.remove("hidden"); },
+    close() {
+      this.el.classList.add("hidden");
+      this.song = null;
+      this.list.innerHTML = "";
+      this.nameInput.value = "";
+      this.hint.classList.add("hidden");
+    },
+    setHint(text) {
+      this.hint.textContent = text;
+      this.hint.classList.remove("hidden");
+    },
+  };
+
+  document.getElementById("playlist-modal-close").addEventListener("click", () => playlistModal.close());
+
+  document.getElementById("playlist-modal-create-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = playlistModal.nameInput.value.trim();
+    if (!name) return;
+    try {
+      const created = await Subsonic.createPlaylist(name);
+      if (playlistModal.song) {
+        const playlistId = created.playlist && created.playlist.id;
+        if (playlistId) await Subsonic.addToPlaylist(playlistId, playlistModal.song.id);
+      }
+      const wasAddingSong = !!playlistModal.song;
+      playlistModal.close();
+      // Only refresh the Playlists section if it's the one actually being
+      // looked at; creating one from a song's add-to-playlist button
+      // (browsing Albums, say) shouldn't yank the user over to it.
+      const playlistsBtn = document.querySelector('.library-nav-btn[data-section="playlists"]');
+      if (!wasAddingSong && playlistsBtn && playlistsBtn.classList.contains("active")) {
+        showPlaylists();
+      }
+    } catch (err) {
+      alert("Could not create playlist: " + err.message);
+    }
+  });
+
+  function openPlaylistCreateModal() {
+    playlistModal.song = null;
+    playlistModal.title.textContent = "New playlist";
+    playlistModal.list.innerHTML = "";
+    playlistModal.open();
+  }
+
+  async function openPlaylistPicker(song) {
+    playlistModal.song = song;
+    playlistModal.title.textContent = `Add "${song.title}" to a playlist`;
+    playlistModal.list.innerHTML = "";
+    playlistModal.open();
     try {
       const data = await Subsonic.getPlaylists();
-      playlists = (data.playlists && data.playlists.playlist) || [];
-    } catch (err) {
-      alert("Could not load playlists: " + err.message);
-      return;
-    }
-    const listing = playlists.map((p, i) => `${i + 1}. ${p.name}`).join("\n") || "(none yet)";
-    const choice = prompt(
-      `Add "${song.title}" to which playlist?\n${listing}\n\nEnter a number above, or type a new name to create one:`
-    );
-    if (!choice || !choice.trim()) return;
-
-    const asNumber = parseInt(choice, 10);
-    let playlistId = (!isNaN(asNumber) && playlists[asNumber - 1]) ? playlists[asNumber - 1].id : null;
-    if (!playlistId) {
-      try {
-        const created = await Subsonic.createPlaylist(choice.trim());
-        playlistId = created.playlist && created.playlist.id;
-      } catch (err) {
-        alert("Could not create playlist: " + err.message);
+      const playlists = (data.playlists && data.playlists.playlist) || [];
+      if (!playlists.length) {
+        playlistModal.setHint("No playlists yet. Create one below.");
         return;
       }
-    }
-    if (!playlistId) { alert("Could not determine which playlist to use."); return; }
-    try {
-      await Subsonic.addToPlaylist(playlistId, song.id);
+      playlists.forEach((p) => {
+        const li = document.createElement("li");
+        li.className = "item-row";
+        const meta = document.createElement("div");
+        meta.className = "item-meta";
+        meta.textContent = p.name;
+        li.appendChild(meta);
+        li.addEventListener("click", async () => {
+          try {
+            await Subsonic.addToPlaylist(p.id, song.id);
+            playlistModal.close();
+          } catch (err) {
+            alert("Could not add to playlist: " + err.message);
+          }
+        });
+        playlistModal.list.appendChild(li);
+      });
     } catch (err) {
-      alert("Could not add to playlist: " + err.message);
+      playlistModal.setHint("Could not load playlists: " + err.message);
     }
   }
 
   function songRow(s) {
+    const track = { title: s.title, artist: s.artist, src: Subsonic.streamUrl(s.id), source: "local" };
     return buildRow({
       icon: "🎵",
       title: s.title,
       sub: s.artist,
       durationText: s.duration ? formatTime(s.duration) : "",
-      onClick: () => enqueue({ title: s.title, artist: s.artist, src: Subsonic.streamUrl(s.id), source: "local" }),
-      actions: songRowActions(s),
+      onClick: () => enqueue(track),
+      actions: songRowActions(s, track),
     });
   }
 
@@ -712,16 +843,7 @@
       createRow.className = "library-action-row";
       const createBtn = document.createElement("button");
       createBtn.textContent = "+ New playlist";
-      createBtn.addEventListener("click", async () => {
-        const name = prompt("Name for the new playlist:");
-        if (!name || !name.trim()) return;
-        try {
-          await Subsonic.createPlaylist(name.trim());
-          showPlaylists();
-        } catch (err) {
-          alert("Could not create playlist: " + err.message);
-        }
-      });
+      createBtn.addEventListener("click", () => openPlaylistCreateModal());
       createRow.appendChild(createBtn);
       list.appendChild(createRow);
 

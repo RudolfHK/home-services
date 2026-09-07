@@ -8,7 +8,24 @@
 </head>
 <body>
 
-  <header class="topbar">
+  <!-- Full-app gate: shown instead of everything else (tabs, YouTube search,
+       queue, player) until a Navidrome login is saved. Previously only the
+       Library tab itself checked for a login, which left YouTube
+       search/download, the queue, and playback fully usable without ever
+       logging in, since that feature has nothing to do with Navidrome to
+       begin with. See app.js's setAppLocked(). -->
+  <div id="app-lock" class="app-lock">
+    <div id="library-login" class="login-box">
+      <p>Enter your Navidrome account to use PiTune.</p>
+      <input id="login-user" type="text" placeholder="Username" autocomplete="username">
+      <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
+      <button id="login-submit">Connect</button>
+      <p class="hint">Stored only in this browser (localStorage). Create a user first from
+        Navidrome's own admin UI if you haven't already.</p>
+    </div>
+  </div>
+
+  <header class="topbar hidden">
     <h1>PiTune</h1>
     <nav class="tabs">
       <button class="tab-btn active" data-tab="library">Library</button>
@@ -18,19 +35,10 @@
     </nav>
   </header>
 
-  <main>
+  <main class="hidden">
     <!-- Local library, browsed via Navidrome's Subsonic API -->
     <section id="tab-library" class="tab-panel active">
-      <div id="library-login" class="login-box hidden">
-        <p>Enter your Navidrome account to browse the local library.</p>
-        <input id="login-user" type="text" placeholder="Username" autocomplete="username">
-        <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
-        <button id="login-submit">Connect</button>
-        <p class="hint">Stored only in this browser (localStorage). Create a user first from
-          Navidrome's own admin UI if you haven't already.</p>
-      </div>
-
-      <!-- Shown instead of the login form when a saved login exists but
+      <!-- Shown when a saved login exists but
            Navidrome didn't answer (e.g. mid-restart) — the credentials are
            kept, not re-requested, since nothing said they were wrong. -->
       <div id="library-connection-error" class="login-box hidden">
@@ -94,7 +102,7 @@
     </section>
   </main>
 
-  <footer class="player-bar">
+  <footer class="player-bar hidden">
     <div class="now-playing">
       <div class="track-title" id="np-title">Nothing playing</div>
       <div class="track-artist" id="np-artist"></div>
@@ -119,6 +127,22 @@
   </footer>
 
   <audio id="audio" preload="none"></audio>
+
+  <!-- Shared by "+ New playlist" (Playlists section) and a song's 📋 button
+       (add to playlist); one modal, driven by openPlaylistCreateModal() and
+       openPlaylistPicker() in app.js, rather than two separate prompt()s. -->
+  <div id="playlist-modal" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 id="playlist-modal-title">Playlists</h3>
+      <p id="playlist-modal-hint" class="hint hidden"></p>
+      <ul id="playlist-modal-list" class="item-list"></ul>
+      <form id="playlist-modal-create-form" class="playlist-modal-create">
+        <input id="playlist-modal-name" type="text" placeholder="New playlist name" autocomplete="off">
+        <button type="submit">Create</button>
+      </form>
+      <button id="playlist-modal-close" class="modal-close">Cancel</button>
+    </div>
+  </div>
 
   <script src="config.js"></script>
   <script src="app.js"></script>

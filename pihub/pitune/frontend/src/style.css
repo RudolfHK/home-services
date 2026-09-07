@@ -47,6 +47,44 @@ input[type="text"], input[type="search"], input[type="password"] {
 
 .hidden { display: none !important; }
 
+/* ── App lock (pre-login gate) ──────────────────────────────────────── */
+.app-lock {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+
+/* ── Modal (playlist create / add-to-playlist) ──────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+}
+.modal-box {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25em;
+  width: min(360px, 90vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75em;
+}
+.modal-box h3 { margin: 0; }
+.modal-box .item-list { max-height: 40vh; overflow-y: auto; }
+.playlist-modal-create { display: flex; gap: 0.5em; }
+.playlist-modal-create input { flex: 1; }
+.modal-close { align-self: flex-start; }
+
 /* ── Top bar ─────────────────────────────────────────────────────────── */
 .topbar {
   display: flex;
@@ -169,6 +207,15 @@ main {
 .item-queue, .item-save, .item-star, .item-playlist-add { font-size: 1.1em; line-height: 1; }
 .item-star { color: var(--text-dim); }
 .item-star.starred { color: var(--accent); border-color: var(--accent); }
+.item-drag-handle {
+  cursor: grab;
+  /* Without this, a touchscreen treats the same gesture as "scroll the
+     page" and either fights the drag or hijacks it entirely; this is
+     what actually lets the Pointer Events handlers in app.js see the
+     gesture at all on a phone. */
+  touch-action: none;
+}
+.item-row.dragging { opacity: 0.5; }
 .save-progress {
   width: 60px;
   height: 6px;
