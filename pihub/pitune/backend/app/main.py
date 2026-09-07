@@ -160,6 +160,12 @@ def _run_search(query: str, limit: int) -> list[dict]:
             "artist": entry.get("uploader") or entry.get("channel"),
             "duration": entry.get("duration"),
             "thumbnail": thumbnails[-1]["url"] if thumbnails else None,
+            # Present on most flat search entries without needing a full
+            # per-video extraction (which would mean one real HTTP request
+            # per result instead of one for the whole search); None when
+            # YouTube's own search response happens not to include it, which
+            # the frontend just omits rather than showing "None views".
+            "viewCount": entry.get("view_count"),
         })
     return results
 

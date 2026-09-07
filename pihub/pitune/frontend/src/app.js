@@ -125,8 +125,23 @@
     getArtist(id) { return this.call("getArtist", { id }); },
     getAlbum(id) { return this.call("getAlbum", { id }); },
     getRandomSongs(size) { return this.call("getRandomSongs", { size }); },
-    getAlbumList2(type, size) { return this.call("getAlbumList2", { type, size }); },
+    getAlbumList2(type, size, offset) { return this.call("getAlbumList2", { type, size, offset: offset || 0 }); },
     getStarred2() { return this.call("getStarred2"); },
+    // submission=true is a real play (increments Navidrome's own playCount,
+    // which is where "Most Played" and every song's play count come from;
+    // nothing PiTune tracks itself, so it survives PiTune being restarted
+    // same as anything else already living in Navidrome's own database).
+    // submission=false is just "now playing", which is also what makes a
+    // PiTune-initiated play show up in PiMonitor's "who's listening" tile.
+    scrobble(id, submission) { return this.call("scrobble", { id, submission }); },
+    search3(query, { songCount, songOffset, artistCount, albumCount } = {}) {
+      return this.call("search3", {
+        query,
+        songCount: songCount != null ? songCount : 100, songOffset: songOffset || 0,
+        artistCount: artistCount != null ? artistCount : 0,
+        albumCount: albumCount != null ? albumCount : 0,
+      });
+    },
     star(id) { return this.call("star", { id }); },
     unstar(id) { return this.call("unstar", { id }); },
     getPlaylists() { return this.call("getPlaylists"); },
@@ -146,6 +161,13 @@
     const m = Math.floor(sec / 60);
     const s = Math.floor(sec % 60).toString().padStart(2, "0");
     return `${m}:${s}`;
+  }
+
+  function formatViewCount(n) {
+    if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+    return String(n);
   }
 
   // Builds one list row from DOM nodes (never innerHTML) so nothing coming
@@ -301,11 +323,41 @@
   }
 
   function playIndex(i) {
-    if (i < 0 || i >= queue.length) return;
+    // Moving away from whatever was current means it's been played through
+    // or skipped past; gone from the queue entirely now, not just left
+    // sitting there deselected. Anything before the removed slot keeps its
+    // position; anything after (including the target, if it was ahead)
+    // shifts down by one to follow the removal.
+    if (queueIndex >= 0 && queueIndex < queue.length) {
+      queue.splice(queueIndex, 1);
+      if (i > queueIndex) i--;
+    }
+    if (i < 0 || i >= queue.length) {
+      queueIndex = -1;
+      audio.pause();
+      audio.removeAttribute("src");
+      renderNowPlaying();
+      renderQueue();
+      return;
+    }
     queueIndex = i;
-    audio.src = queue[i].src;
+    const track = queue[i];
+    // /api/stream (YouTube) and even a local Navidrome file over a slow
+    // link both take a visible moment before audio.play() actually
+    // produces sound; say so, rather than leaving the old title on screen
+    // looking like nothing happened. Cleared by the "playing" listener
+    // below once real playback starts.
+    document.getElementById("np-title").textContent = "Loading…";
+    document.getElementById("np-artist").textContent = track.artist || "";
+    document.querySelector(".now-playing").classList.add("loading");
+    audio.src = track.src;
     audio.play().catch((err) => console.warn("Playback failed:", err));
-    renderNowPlaying();
+    if (track.source === "local" && track.id) {
+      // "Now playing" (not yet a counted play); also what makes this show
+      // up in PiMonitor's "who's listening" tile, same as any other
+      // Subsonic client's playback would.
+      Subsonic.scrobble(track.id, false).catch((err) => console.warn("Scrobble (now playing) failed:", err));
+    }
     renderQueue();
   }
 
@@ -423,11 +475,28 @@
   }
 
   audio.addEventListener("ended", () => {
-    maybeAutoSaveToLibrary(queue[queueIndex]);
+    const finished = queue[queueIndex];
+    maybeAutoSaveToLibrary(finished);
+    // submission=true only on a real, natural finish (this event fires for
+    // that and nothing else, not skip/prev/next, which just replace
+    // audio.src instead); a track abandoned partway through isn't "a
+    // play" the way Navidrome's own playCount means it.
+    if (finished && finished.source === "local" && finished.id) {
+      Subsonic.scrobble(finished.id, true).catch((err) => console.warn("Scrobble failed:", err));
+    }
     playIndex(queueIndex + 1);
   });
   audio.addEventListener("play", () => { document.getElementById("btn-playpause").textContent = "⏸"; });
   audio.addEventListener("pause", () => { document.getElementById("btn-playpause").textContent = "▶"; });
+  audio.addEventListener("playing", () => {
+    document.querySelector(".now-playing").classList.remove("loading");
+    renderNowPlaying();
+  });
+  audio.addEventListener("error", () => {
+    if (!audio.src) return; // removeAttribute("src") itself fires a spurious error event
+    document.querySelector(".now-playing").classList.remove("loading");
+    document.getElementById("np-title").textContent = "Playback error";
+  });
 
   const seekEl = document.getElementById("np-seek");
   let seeking = false;
@@ -547,6 +616,11 @@
     const list = document.getElementById("library-list");
     list.innerHTML = "";
     rows.forEach((row) => list.appendChild(row));
+    // Only the Songs section (showSongsSection) manages this itself;
+    // every other section renders its one complete result set through
+    // here, so hiding it by default means Songs is the only place it's
+    // ever visible.
+    document.getElementById("library-load-more").classList.add("hidden");
   }
 
   // A ping success at page load doesn't guarantee Navidrome stays up for
@@ -557,6 +631,7 @@
   function renderLibraryError(message) {
     const list = document.getElementById("library-list");
     list.innerHTML = "";
+    document.getElementById("library-load-more").classList.add("hidden");
     const li = document.createElement("li");
     li.className = "item-sub";
     li.textContent = message;
@@ -690,11 +765,16 @@
   }
 
   function songRow(s) {
-    const track = { title: s.title, artist: s.artist, src: Subsonic.streamUrl(s.id), source: "local" };
+    // id travels with the track specifically so playIndex()/the "ended"
+    // handler can scrobble plays back to Navidrome; see their own
+    // comments for why that, not anything PiTune stores itself, is what
+    // "Most Played" and every play count are actually backed by.
+    const track = { title: s.title, artist: s.artist, src: Subsonic.streamUrl(s.id), source: "local", id: s.id };
+    const plays = s.playCount ? ` · ${s.playCount} play${s.playCount === 1 ? "" : "s"}` : "";
     return buildRow({
       icon: "🎵",
       title: s.title,
-      sub: s.artist,
+      sub: (s.artist || "") + plays,
       durationText: s.duration ? formatTime(s.duration) : "",
       onClick: () => enqueue(track),
       actions: songRowActions(s, track),
@@ -705,23 +785,62 @@
     document.querySelectorAll(".library-nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.section === name));
   }
 
+  // Subsonic has no endpoint for "list every song, paginated"; only
+  // albums support offset-based paging (getAlbumList2). This section
+  // fakes the song-level version of that by paging through ALBUMS
+  // alphabetically and flattening each page's songs, a handful of albums
+  // at a time rather than fetching genuinely all of them up front (which
+  // would mean one enormous request and a long wait before anything shows
+  // up on a big library). "Load more" fetches the next batch; there's no
+  // total or page count to show since Subsonic doesn't expose a song
+  // count either, only whichever real library data has actually loaded.
+  const SONGS_SECTION_ALBUM_BATCH = 5;
+  let songsSectionAlbumOffset = 0;
+
+  async function loadMoreSongs() {
+    const btn = document.getElementById("library-load-more");
+    btn.disabled = true;
+    btn.textContent = "Loading…";
+    try {
+      const data = await Subsonic.getAlbumList2("alphabeticalByName", SONGS_SECTION_ALBUM_BATCH, songsSectionAlbumOffset);
+      const albums = (data.albumList2 && data.albumList2.album) || [];
+      songsSectionAlbumOffset += albums.length;
+      if (!albums.length) {
+        btn.textContent = "No more songs";
+        return; // stays disabled: this was the last page
+      }
+      // allSettled, not all: one bad album (removed mid-scan, say)
+      // must not abort every other album's songs along with it.
+      const albumDetails = (await Promise.allSettled(albums.map((al) => Subsonic.getAlbum(al.id))))
+        .filter((r) => r.status === "fulfilled").map((r) => r.value);
+      const list = document.getElementById("library-list");
+      albumDetails.forEach((detail) => {
+        const songs = (detail.album && detail.album.song) || [];
+        songs.forEach((s) => list.appendChild(songRow(s)));
+      });
+      btn.textContent = "Load more";
+      btn.disabled = false;
+    } catch (err) {
+      btn.textContent = "Load more (failed, tap to retry)";
+      btn.disabled = false;
+    }
+  }
+
   async function showSongsSection() {
     selectLibrarySection("songs");
     libraryStack = [{ label: "Songs", render: showSongsSection }];
     renderBreadcrumbs();
-    try {
-      const data = await Subsonic.getRandomSongs(100);
-      const songs = (data.randomSongs && data.randomSongs.song) || [];
-      const list = document.getElementById("library-list");
-      list.innerHTML = "";
-      const hint = document.createElement("li");
-      hint.className = "library-section-hint";
-      hint.textContent = "A random sample, not your whole library: there is no Subsonic call for a flat, complete song list.";
-      list.appendChild(hint);
-      songs.forEach((s) => list.appendChild(songRow(s)));
-    } catch (err) {
-      renderLibraryError("Could not load songs: " + err.message);
-    }
+    songsSectionAlbumOffset = 0;
+    const list = document.getElementById("library-list");
+    list.innerHTML = "";
+    const hint = document.createElement("li");
+    hint.className = "library-section-hint";
+    hint.textContent = "Loaded album by album, alphabetically. Subsonic has no flat \"every song\" call to page through directly; Load more for further albums.";
+    list.appendChild(hint);
+    const btn = document.getElementById("library-load-more");
+    btn.classList.remove("hidden");
+    btn.onclick = loadMoreSongs; // assignment, not addEventListener: revisiting this section must not stack a second handler
+    await loadMoreSongs();
   }
 
   async function showAlbumsSection() {
@@ -810,22 +929,65 @@
     }
   }
 
+  // Same underlying gap as "Recently Added": Subsonic has no "most played
+  // songs" call, only getTopSongs (one specific ARTIST's top tracks, not
+  // library-wide). This pulls a large random sample, same source as the
+  // Songs section, and sorts it by playCount; an approximation of the
+  // true most-played list, not a guarantee, but every playCount in it is
+  // real (Navidrome's own, incremented via scrobble; see playIndex/the
+  // "ended" handler), so a bigger sample only ever makes this MORE
+  // accurate, never wrong in a misleading way.
+  const MOST_PLAYED_SAMPLE_SIZE = 500;
+  const MOST_PLAYED_SONG_COUNT = 20;
+
+  async function showMostPlayed() {
+    selectLibrarySection("most-played");
+    libraryStack = [{ label: "Most Played", render: showMostPlayed }];
+    renderBreadcrumbs();
+    try {
+      const data = await Subsonic.getRandomSongs(MOST_PLAYED_SAMPLE_SIZE);
+      const songs = ((data.randomSongs && data.randomSongs.song) || []).filter((s) => s.playCount > 0);
+      if (!songs.length) {
+        renderLibraryError("Nothing played yet. Play counts come from Navidrome, so this fills in as you listen.");
+        return;
+      }
+      songs.sort((a, b) => (b.playCount || 0) - (a.playCount || 0));
+      renderLibraryList(songs.slice(0, MOST_PLAYED_SONG_COUNT).map(songRow));
+    } catch (err) {
+      renderLibraryError("Could not load most-played songs: " + err.message);
+    }
+  }
+
+  // "Newest" per getAlbumList2 is ALBUM-level (when Navidrome's scanner
+  // first indexed it), which isn't the same thing as the individual SONGS
+  // most recently added; one freshly-downloaded YouTube track usually
+  // lands in an existing/generic album grouping (yt-dlp's extracted
+  // metadata rarely tags a real album), so showing recent ALBUMS mostly
+  // surfaced old, unrelated ones instead. Songs do carry their own
+  // `created` timestamp, just not through any endpoint that sorts by it
+  // directly, so this pulls songs from the N most recently touched
+  // albums and re-sorts by each song's own created date, which is close
+  // enough in practice: a genuinely-new song's album is always among the
+  // most recently touched ones too.
+  const RECENTLY_ADDED_ALBUM_POOL = 30;
+  const RECENTLY_ADDED_SONG_COUNT = 10;
+
   async function showRecentlyAdded() {
     selectLibrarySection("recent");
     libraryStack = [{ label: "Recently Added", render: showRecentlyAdded }];
     renderBreadcrumbs();
     try {
-      const data = await Subsonic.getAlbumList2("newest", 50);
-      const albums = (data.albumList2 && data.albumList2.album) || [];
-      renderLibraryList(albums.map((al) => buildRow({
-        thumbUrl: al.coverArt ? Subsonic.coverArtUrl(al.coverArt) : null,
-        icon: "💿",
-        title: al.name,
-        sub: al.artist || (al.year ? String(al.year) : ""),
-        onClick: () => showAlbumSongs(al.id, al.name),
-      })));
+      const albumData = await Subsonic.getAlbumList2("newest", RECENTLY_ADDED_ALBUM_POOL);
+      const albums = (albumData.albumList2 && albumData.albumList2.album) || [];
+      // allSettled, not all: one bad album (removed mid-scan, say)
+      // must not abort every other album's songs along with it.
+      const albumDetails = (await Promise.allSettled(albums.map((al) => Subsonic.getAlbum(al.id))))
+        .filter((r) => r.status === "fulfilled").map((r) => r.value);
+      const songs = albumDetails.flatMap((detail) => (detail.album && detail.album.song) || []);
+      songs.sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0));
+      renderLibraryList(songs.slice(0, RECENTLY_ADDED_SONG_COUNT).map(songRow));
     } catch (err) {
-      renderLibraryError("Could not load recently added albums: " + err.message);
+      renderLibraryError("Could not load recently added songs: " + err.message);
     }
   }
 
@@ -881,12 +1043,50 @@
     }
   }
 
+  const librarySections = {
+    songs: showSongsSection, albums: showAlbumsSection, artists: showArtists,
+    favorites: showFavorites, recent: showRecentlyAdded, "most-played": showMostPlayed,
+    playlists: showPlaylists,
+  };
   document.querySelectorAll(".library-nav-btn").forEach((btn) => {
-    const sections = {
-      songs: showSongsSection, albums: showAlbumsSection, artists: showArtists,
-      favorites: showFavorites, recent: showRecentlyAdded, playlists: showPlaylists,
-    };
-    btn.addEventListener("click", () => sections[btn.dataset.section]());
+    btn.addEventListener("click", () => {
+      document.getElementById("library-search-input").value = "";
+      librarySections[btn.dataset.section]();
+    });
+  });
+
+  // ── Library search (Subsonic search3) ───────────────────────────────
+  // Searches across the whole library regardless of which sidebar section
+  // is active; clearing the box goes back to whichever section's button is
+  // still marked active (its render() was never replaced, just not run
+  // while a search was showing instead).
+  document.getElementById("library-search-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const query = document.getElementById("library-search-input").value.trim();
+    const list = document.getElementById("library-list");
+    if (!query) {
+      const activeBtn = document.querySelector(".library-nav-btn.active");
+      if (activeBtn) librarySections[activeBtn.dataset.section]();
+      return;
+    }
+    libraryStack = [{ label: `Search: ${query}`, render: () => document.getElementById("library-search-form").requestSubmit() }];
+    renderBreadcrumbs();
+    list.innerHTML = "";
+    const loading = document.createElement("li");
+    loading.className = "item-sub";
+    loading.textContent = "Searching…";
+    list.appendChild(loading);
+    try {
+      const data = await Subsonic.search3(query);
+      const songs = (data.searchResult3 && data.searchResult3.song) || [];
+      if (!songs.length) {
+        renderLibraryError(`No songs matched "${query}".`);
+        return;
+      }
+      renderLibraryList(songs.map(songRow));
+    } catch (err) {
+      renderLibraryError("Search failed: " + err.message);
+    }
   });
 
   // ── YouTube search ──────────────────────────────────────────────────
@@ -915,11 +1115,12 @@
       }
       data.results.forEach((r) => {
         const track = { title: r.title, artist: r.artist, src: `api/stream/${r.id}`, source: "youtube", videoId: r.id };
+        const views = r.viewCount != null ? ` · ${formatViewCount(r.viewCount)} views` : "";
         list.appendChild(buildRow({
           thumbUrl: r.thumbnail,
           icon: "▶",
           title: r.title,
-          sub: r.artist,
+          sub: (r.artist || "") + views,
           durationText: r.duration ? formatTime(r.duration) : "",
           onClick: () => enqueue(track),
           actions: [

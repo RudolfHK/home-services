@@ -155,6 +155,8 @@ main {
 .library-content { flex: 1; min-width: 0; }
 .library-section-hint { color: var(--text-dim); font-size: 0.85em; margin-bottom: 0.75em; }
 .library-action-row { padding: 0.3em 0.5em 0.75em; }
+.library-load-more { display: block; width: 100%; margin-top: 0.75em; }
+.library-load-more:disabled { opacity: 0.6; cursor: default; }
 
 .item-list {
   list-style: none;
@@ -241,6 +243,11 @@ main {
 .now-playing { min-width: 0; flex: 1 1 160px; }
 .track-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .track-artist { color: var(--text-dim); font-size: 0.85em; }
+.now-playing.loading .track-title { animation: np-loading-pulse 1.2s ease-in-out infinite; }
+@keyframes np-loading-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
 
 .transport { display: flex; gap: 0.4em; flex-shrink: 0; }
 .transport button { min-width: 2.4em; }
