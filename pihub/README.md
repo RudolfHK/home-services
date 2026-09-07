@@ -419,6 +419,104 @@ anything else in this stack.
   comfortably under the ~1.5GB target on an 4GB Pi 5; Jellyfin's own memory
   use grows mainly while actively transcoding.
 
+## Jellyfin playback & streaming quality
+
+Everything in this section lives inside Jellyfin's own admin dashboard and
+its web player, not in a file this repo tracks: Jellyfin keeps all of it in
+`JELLYFIN_CONFIG_PATH` (a bind-mounted, gitignored SQLite database), so
+there's nothing here to commit. What follows is where to look and what to
+change, plus the one Pi 5 hardware limit (already noted above: decode only,
+no encode) that quietly explains three of the four questions below.
+
+**First, find out what's actually happening: Direct Play or Transcode.**
+Open the player's on-screen controls during playback and look for the
+playback-info panel (an info/stats icon in the OSD, or the same panel from
+the item's detail page while it's playing). It names a **Play Method**:
+
+- **Direct Play**: the original file, byte for byte, sent straight through.
+  No server-side work beyond reading the file, so it can run at the file's
+  full original bitrate and resolution.
+- **Direct Stream**: same file, only the container is repackaged (audio/
+  video left untouched); still cheap.
+- **Transcode**: the video is being decoded and *re-encoded* live to
+  something the client can play.
+
+The 6 Mbps ceiling almost always means the file landed on Transcode. That
+happens when the browser can't play the source codec/container itself
+(common with 4K HEVC in some browsers), when a subtitle needs to be burned
+into the video, or when a quality/bitrate limit (below) forced it. On a Pi
+5, that matters more than on a PC: Jellyfin can hardware-*decode* through
+the V4L2 devices already discussed above, but there's no hardware *encode*
+path, so a live transcode falls back to software x264 on the Pi's CPU.
+Real-time software encoding of 4K in full quality is heavy enough that Jellyfin
+throttles resolution/bitrate down to whatever the CPU can sustain, which is
+exactly where a number like 6 Mbps comes from. So the effective fix isn't
+"raise the transcode bitrate", it's "get these files onto Direct Play":
+
+- Raise or remove the bitrate ceiling: the web player's quality selector
+  (gear icon in the OSD) has an explicit bitrate cap alongside an
+  Auto/Max option, and Jellyfin separately applies a lower cap to anything
+  it decides is a "remote" connection (**Dashboard → Networking**). Both can
+  quietly force a transcode even when the file would otherwise Direct Play.
+  Set both to Max/unrestricted for LAN and Tailscale use.
+- Match what the client can actually decode. If a title keeps transcoding
+  purely for video, the client (TV app, browser, phone) most likely can't
+  handle its codec/container natively; there's no server setting that turns
+  that into Direct Play, only re-muxing/re-encoding the file itself ahead of
+  time (outside Jellyfin) into a broadly-supported codec would.
+- If it must transcode, hardware acceleration only helps decode on this
+  board (**Dashboard → Playback**, V4L2M2M, per the bullet above); the
+  encode side stays on the CPU regardless, so expect any transcoded 4K
+  stream to be capped well below the source bitrate no matter what the
+  dashboard sliders say.
+
+**Why changing subtitle/audio language restarts the stream to the title
+image.** Whatever Play Method was in use, switching tracks mid-playback
+almost always forces Jellyfin to open a brand new stream at your current
+position rather than adjust the existing one in place: a subtitle format
+that needs to be burned into the picture (image-based ones like PGS/VOBSUB,
+or "forced" burn-in) can only take effect by re-encoding from that point on,
+and even swapping between two already-compatible audio tracks typically
+still means renegotiating the connection, since a Direct Play session is
+just the browser reading one fixed byte range of the file, not something
+that can be told "decode a different embedded track" after the fact. The
+web player shows the item's backdrop while that new session spins up
+because, from its point of view, playback did stop, a new one is starting.
+That's client behavior baked into `jellyfin-web`, not a PiHub setting, so it
+can't be reconfigured from this repo; what you can influence is how often
+it happens. Text-based subtitles (SRT/ASS/VTT) are rendered by the browser
+itself, layered on top of the video, so selecting one of those, instead of
+an image-based track, never touches the underlying stream at all and won't
+restart anything. Audio-track switches restart regardless of format, since
+that's the one-active-track-per-session limitation described above, not a
+subtitle-specific one.
+
+**What the vertical lines on the seek bar are.** Chapter markers, pulled
+from the file's own embedded chapter metadata if it has any. If a title has
+none, Jellyfin can still generate them (**Dashboard → Scheduled Tasks →
+Extract Chapter Images**) which is also what populates the little thumbnail
+previews you get hovering over the seek bar on titles that do show them.
+
+**Buffering ahead of the playhead, so a stutter in the connection doesn't
+stop playback.** For Direct Play, this already happens and needs no config:
+the browser's own `<video>` element requests the file ahead of where you
+are and keeps a lead, the same way any HTML5 video does. It's visible on
+the seek bar itself, as a lighter fill reaching further right than the red
+"played" marker, distinct from the plain background covering the part you
+haven't reached yet; that lighter section is exactly the buffered-ahead
+amount already sitting in the browser. For a Transcode session, Jellyfin's
+web client uses HLS (segmented, several seconds each) and does the same
+kind of look-ahead by fetching a few segments in advance, so the same idea
+already applies there too. The catch on a Pi 5 is upstream of any buffer
+setting: a live software transcode of 4K can only produce those segments
+at, at best, roughly real-time speed (see the encode limitation above), so
+there's rarely more than a few seconds of already-encoded video for the
+player to get ahead on, no matter how large a lead the client is willing to
+hold. The professional-streaming-site experience the question is describing
+is really a description of Direct Play (a fixed file, so buffering minutes
+ahead costs nothing); getting more of the library there is the same fix as
+the bitrate question above, not a separate buffering feature to add.
+
 ## Security model
 
 Same posture as this repo's other stacks by default: this assumes it never
