@@ -137,7 +137,12 @@
   // Builds one list row from DOM nodes (never innerHTML) so nothing coming
   // from Navidrome metadata or YouTube search results — titles, thumbnail
   // URLs — can break out of an attribute or inject markup.
-  function buildRow({ thumbUrl, icon, title, sub, durationText, onClick, onRemove }) {
+  //
+  // actions: [{icon, title, onClick, className}], rendered in the order
+  // given, each stopping the click from also triggering onClick (the row
+  // itself); lets a row offer more than one action (YouTube results get
+  // queue AND save; Queue rows just get remove).
+  function buildRow({ thumbUrl, icon, title, sub, durationText, onClick, actions }) {
     const li = document.createElement("li");
     li.className = "item-row";
 
@@ -173,14 +178,14 @@
       li.appendChild(dur);
     }
 
-    if (onRemove) {
+    (actions || []).forEach(({ icon: actionIcon, title: actionTitle, onClick: actionOnClick, className }) => {
       const btn = document.createElement("button");
-      btn.className = "item-remove";
-      btn.title = "Remove";
-      btn.textContent = "✕";
-      btn.addEventListener("click", (e) => { e.stopPropagation(); onRemove(); });
+      btn.className = className ? `item-action ${className}` : "item-action";
+      btn.title = actionTitle || "";
+      btn.textContent = actionIcon;
+      btn.addEventListener("click", (e) => { e.stopPropagation(); actionOnClick(btn); });
       li.appendChild(btn);
-    }
+    });
 
     if (onClick) li.addEventListener("click", onClick);
     return li;
@@ -200,13 +205,16 @@
         title: track.title,
         sub: track.artist,
         onClick: () => playIndex(i),
-        onRemove: () => {
-          queue.splice(i, 1);
-          if (i < queueIndex) queueIndex--;
-          else if (i === queueIndex) { queueIndex = -1; audio.pause(); audio.removeAttribute("src"); }
-          renderQueue();
-          renderNowPlaying();
-        },
+        actions: [{
+          icon: "✕", title: "Remove", className: "item-remove",
+          onClick: () => {
+            queue.splice(i, 1);
+            if (i < queueIndex) queueIndex--;
+            else if (i === queueIndex) { queueIndex = -1; audio.pause(); audio.removeAttribute("src"); }
+            renderQueue();
+            renderNowPlaying();
+          },
+        }],
       });
       if (i === queueIndex) row.classList.add("playing");
       list.appendChild(row);
@@ -234,6 +242,13 @@
     playIndex(queue.length - 1);
   }
 
+  // Adds without touching playback, unlike enqueue() above, for a
+  // dedicated "add to queue" action distinct from "play this now".
+  function addToQueue(track) {
+    queue.push(track);
+    renderQueue();
+  }
+
   document.getElementById("btn-playpause").addEventListener("click", () => {
     if (!audio.src) return;
     if (audio.paused) audio.play(); else audio.pause();
@@ -252,20 +267,49 @@
   // off, which isn't worth surfacing as an error to the listener.
   const autoSavedVideoIds = new Set();
 
+  function postSaveToLibrary(videoId) {
+    const headers = {};
+    if (window.PIHUB_API_TOKEN) headers["X-PiHub-Token"] = window.PIHUB_API_TOKEN;
+    return fetch(`api/save/${videoId}`, { method: "POST", headers });
+  }
+
   async function maybeAutoSaveToLibrary(track) {
     if (!track || track.source !== "youtube" || !track.videoId) return;
     if (autoSavedVideoIds.has(track.videoId)) return; // don't re-save a replay
     autoSavedVideoIds.add(track.videoId);
 
     try {
-      const headers = {};
-      if (window.PIHUB_API_TOKEN) headers["X-PiHub-Token"] = window.PIHUB_API_TOKEN;
-      const res = await fetch(`api/save/${track.videoId}`, { method: "POST", headers });
+      const res = await postSaveToLibrary(track.videoId);
       if (!res.ok && res.status !== 403) {
         console.warn("Auto-save to library failed:", await res.text());
       }
     } catch (err) {
       console.warn("Auto-save to library failed:", err);
+    }
+  }
+
+  // Explicit, user-triggered save from a YouTube search result (the ⬇
+  // button); unlike maybeAutoSaveToLibrary above, which fires silently
+  // once a track finishes playing naturally, this one gives visible
+  // feedback directly on the button, since the user asked for it.
+  async function saveToLibraryManually(videoId, button) {
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "…";
+    try {
+      const res = await postSaveToLibrary(videoId);
+      if (res.ok) {
+        button.textContent = "✓";
+        button.title = "Saved to library";
+        autoSavedVideoIds.add(videoId); // skip a redundant auto-save if played to completion later
+      } else {
+        const detail = await res.text();
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+    } catch (err) {
+      button.textContent = "✕";
+      button.title = `Save failed: ${err.message}`;
+      setTimeout(() => { button.textContent = original; button.title = "Save to library"; button.disabled = false; }, 4000);
     }
   }
 
@@ -475,13 +519,18 @@
         return;
       }
       data.results.forEach((r) => {
+        const track = { title: r.title, artist: r.artist, src: `api/stream/${r.id}`, source: "youtube", videoId: r.id };
         list.appendChild(buildRow({
           thumbUrl: r.thumbnail,
           icon: "▶",
           title: r.title,
           sub: r.artist,
           durationText: r.duration ? formatTime(r.duration) : "",
-          onClick: () => enqueue({ title: r.title, artist: r.artist, src: `api/stream/${r.id}`, source: "youtube", videoId: r.id }),
+          onClick: () => enqueue(track),
+          actions: [
+            { icon: "＋", title: "Add to queue", className: "item-queue", onClick: () => addToQueue(track) },
+            { icon: "⬇", title: "Save to library", className: "item-save", onClick: (btn) => saveToLibraryManually(r.id, btn) },
+          ],
         }));
       });
     } catch (err) {

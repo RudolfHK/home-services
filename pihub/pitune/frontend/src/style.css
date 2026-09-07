@@ -147,7 +147,8 @@ main {
 }
 .item-sub { color: var(--text-dim); font-size: 0.85em; }
 .item-duration { color: var(--text-dim); font-size: 0.85em; flex-shrink: 0; }
-.item-remove { flex-shrink: 0; }
+.item-action { flex-shrink: 0; }
+.item-queue, .item-save { font-size: 1.1em; line-height: 1; }
 
 /* ── Player bar ──────────────────────────────────────────────────────── */
 .player-bar {

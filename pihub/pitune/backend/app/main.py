@@ -1,13 +1,21 @@
 """PiTune backend — wraps yt-dlp for YouTube search and audio-only streaming.
 
-Two things this deliberately does NOT do:
-  - It never downloads a full video file to serve /api/stream. It pipes
-    yt-dlp's own stdout straight into the HTTP response, chunk by chunk, in
-    whatever container YouTube served (webm/opus or m4a/aac) — no re-encode,
-    no temp file, minimal CPU/disk load on a Pi.
-  - It never redirects the browser to the raw googlevideo.com URL yt-dlp
-    resolves. That URL is only valid for the IP that requested it — which
-    would be this container, not the browser — so redirecting would just 403.
+/api/stream downloads the resolved audio-only format to a local cache file
+first, then serves that file with FileResponse, rather than piping a live
+yt-dlp subprocess straight into the response. A piped subprocess cannot
+answer an HTTP Range request (there's no seeking backward or forward in a
+one-way pipe), so <audio>'s own seek bar had nothing to work with and just
+restarted playback from 0:00 on every scrub. FileResponse handles Range
+natively, giving real seeking, at the cost of a delay before playback
+starts (waiting for the whole track to download) instead of the previous
+near-instant first byte. The cache is deliberately NOT a persistent volume:
+plain container-local storage that disappears on every restart, so repeat
+plays/seeks within one uptime are free without needing eviction logic for
+an otherwise-unbounded "every song ever streamed" cache.
+
+This still never redirects the browser to the raw googlevideo.com URL
+yt-dlp resolves; that URL is only valid for the IP that requested it
+(this container, not the browser), so redirecting would just 403.
 """
 
 import asyncio
@@ -15,13 +23,12 @@ import logging
 import os
 import re
 import secrets
-import shutil
 from pathlib import Path
 
 import yt_dlp
 from fastapi import Depends, FastAPI, Header, HTTPException, Path as PathParam, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse
 
 logger = logging.getLogger("pitune.backend")
 logging.basicConfig(level=logging.INFO)
@@ -78,12 +85,18 @@ _COOKIES_FILE = Path("/config/cookies.txt")
 YTDLP_COOKIES_FILE = str(_COOKIES_FILE) if _COOKIES_FILE.is_file() and _COOKIES_FILE.stat().st_size > 0 else None
 
 # YouTube video IDs are always exactly 11 URL-safe base64-ish characters.
-# Validating this up front matters beyond input hygiene: video_id is passed as
-# a literal argv element to the yt-dlp CLI in stream(), and a value starting
-# with "-" would otherwise be parsed as a yt-dlp flag instead of a URL.
+# Validating this up front matters beyond input hygiene: video_id becomes
+# part of a cache filename in _download_for_stream() below, and FastAPI's
+# own path-parameter length bounds don't rule out something like "../../etc"
+# on their own.
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 _EXT_MIME = {"webm": "audio/webm", "m4a": "audio/mp4", "mp3": "audio/mpeg", "opus": "audio/opus"}
+
+# Deliberately container-local, not a bind mount or named volume (see the
+# module docstring): this cache is meant to disappear on every restart.
+_STREAM_CACHE_DIR = Path("/tmp/pitune-stream-cache")
+_STREAM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="PiTune backend")
 app.add_middleware(
@@ -129,13 +142,29 @@ def _run_search(query: str, limit: int) -> list[dict]:
     return results
 
 
-def _resolve_audio(video_id: str) -> dict:
-    """Resolves the best audio-only format WITHOUT downloading, so we know the
-    container (webm/m4a) and can set Content-Type before the stream starts."""
-    opts = {**_BASE_OPTS, "format": "bestaudio/best", "skip_download": True}
+def _download_for_stream(video_id: str) -> Path:
+    """Downloads the best audio-only format to _STREAM_CACHE_DIR (or reuses
+    an already-cached copy), so /api/stream can serve a real file; needed
+    for Range/seeking support; see the module docstring. video_id is already
+    validated by the caller, so the glob below can't escape the cache dir."""
+    # p.stem strips exactly one suffix, so this matches "<id>.webm" but not
+    # an interrupted download's "<id>.webm.part" (stem "<id>.webm") or
+    # "<id>.ytdl" resume-metadata sidecar left behind by a killed container
+    # mid-download, either of which the plain glob below would otherwise
+    # treat as a complete, cached file.
+    existing = [p for p in _STREAM_CACHE_DIR.glob(f"{video_id}.*") if p.stem == video_id]
+    if existing:
+        return existing[0]
+
+    opts = {
+        **_BASE_OPTS,
+        "format": "bestaudio/best",
+        "outtmpl": str(_STREAM_CACHE_DIR / f"{video_id}.%(ext)s"),
+    }
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(_video_url(video_id), download=False)
-    return {"ext": info.get("ext", "webm"), "title": info.get("title")}
+        info = ydl.extract_info(_video_url(video_id), download=True)
+    ext = info.get("ext", "webm")
+    return _STREAM_CACHE_DIR / f"{video_id}.{ext}"
 
 
 @app.get("/api/health")
@@ -167,41 +196,15 @@ async def stream(video_id: str = PathParam(..., min_length=11, max_length=11)):
     video_id = _validate_video_id(video_id)
 
     try:
-        meta = await asyncio.to_thread(_resolve_audio, video_id)
+        path = await asyncio.to_thread(_download_for_stream, video_id)
     except yt_dlp.utils.DownloadError as exc:
         raise HTTPException(status_code=404, detail=f"Video unavailable: {exc}")
 
-    ytdlp_bin = shutil.which("yt-dlp")
-    cmd = [ytdlp_bin]
-    if YTDLP_COOKIES_FILE:
-        cmd += ["--cookies", YTDLP_COOKIES_FILE]
-    cmd += [
-        "--quiet", "--no-warnings", "--no-playlist",
-        "-f", "bestaudio/best",
-        "-o", "-",
-        _video_url(video_id),
-    ]
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-    )
-
-    async def body():
-        try:
-            while True:
-                chunk = await proc.stdout.read(64 * 1024)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            # A skipped/closed track must not leave yt-dlp running in the
-            # background still pulling bytes off YouTube.
-            if proc.returncode is None:
-                proc.kill()
-            await proc.wait()
-
-    media_type = _EXT_MIME.get(meta["ext"], "application/octet-stream")
-    return StreamingResponse(body(), media_type=media_type)
+    media_type = _EXT_MIME.get(path.suffix.lstrip("."), "application/octet-stream")
+    # FileResponse handles Range/If-Range/Accept-Ranges itself; this is the
+    # actual seeking fix; a piped subprocess (the old approach) has no bytes
+    # to seek within, only ones already flushed to the socket.
+    return FileResponse(path, media_type=media_type)
 
 
 @app.post("/api/save/{video_id}", dependencies=[Depends(require_token)])
