@@ -349,9 +349,12 @@ carries: if `MEDIA_LIBRARY_ROOT` points into Nextcloud, its own database
 does **not** learn about a newly-saved file automatically, exactly the
 "nothing else writes into the drive" case home-drive's README describes.
 Run `docker exec -u www-data homedrive-nextcloud-app php occ files:scan --all`
-after the fact (or put it on the same schedule as PiTune's auto-saves,
-however often that ends up being for you), or set `DOWNLOAD_ENABLED=false`
-if you'd rather this never happens automatically.
+after the fact, or set `DOWNLOAD_ENABLED=false` if you'd rather this never
+happens automatically. Rather not run that by hand or put it on a schedule?
+home-drive has an optional `nextcloud-media-watch` profile that watches
+this exact folder and runs a scoped rescan (just this folder, not `--all`)
+the moment a file actually lands, instead of guessing at how often you'll
+need it; see home-drive's README.md.
 
 New files added through Nextcloud show up in PiTune/Jellyfin once their
 own scans pick them up: Navidrome within `ND_SCANSCHEDULE` (every hour by

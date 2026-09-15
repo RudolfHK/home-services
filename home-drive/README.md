@@ -385,6 +385,25 @@ outside Nextcloud, PiHub included, needs Nextcloud told about it afterwards:
 docker exec -u www-data homedrive-nextcloud-app php occ files:scan --all
 ```
 
+**Doing that automatically instead of by hand or on a schedule.** The
+optional `nextcloud-media-watch` profile runs one extra container
+(`nextcloud-file-watcher`) that watches the exact folder PiHub's PiTune
+saves YouTube tracks into and runs a *scoped* rescan (`occ files:scan
+--path=...`, just that one folder, not `--all`) the moment a file actually
+finishes writing, instead of guessing at a schedule or remembering to run
+the command above yourself:
+
+```bash
+# In .env, set NEXTCLOUD_WATCH_RELATIVE_PATH to the folder PiTune writes
+# into, relative to ${DATA_PATH}/nextcloud/data (see .env.example's own
+# comment for how to work this out from your Nextcloud username and
+# PiHub's MEDIA_LIBRARY_ROOT).
+docker compose --profile nextcloud-media-watch up -d --build
+```
+
+Only worth enabling if you've actually set `MEDIA_LIBRARY_ROOT` to point in
+here (see PiHub's own guide); otherwise there's nothing for it to watch.
+
 Want a non-Nextcloud folder visible inside the drive as well? Do it properly, through
 **Settings → Administration → External storage** as a *Local* mount. Nextcloud then knows
 it's external and rescans it, but locking and versioning do **not** apply there, so treat it

@@ -295,7 +295,68 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  # ── 2. Tailscale (optional) — reach the drive from outside the LAN ───────
+  # ── 2. PiHub-media auto-rescan (optional) ────────────────────────────────
+  # Off by default: only starts with `docker compose --profile
+  # nextcloud-media-watch up -d` (or `up -d nextcloud-file-watcher`). Only
+  # useful if you've followed PiHub's "Mounting a Nextcloud folder as your
+  # media library" guide, with PiHub's MEDIA_LIBRARY_ROOT pointing in here;
+  # if you haven't, there's nothing for this to watch and it's not worth
+  # running. See README.md.
+  #
+  # PiTune's own writer (pitune-backend, in PiHub's stack) saves straight to
+  # disk when it saves a YouTube track, bypassing Nextcloud's file API
+  # entirely, so Nextcloud's own index never learns about that file until
+  # something calls `occ files:scan`. Without this container, that means
+  # either a manual `occ files:scan --all` (a full, slow rescan of your
+  # whole library) or a cron schedule guessing at how often you might have
+  # downloaded something. This container watches NEXTCLOUD_WATCH_RELATIVE_
+  # PATH instead (see nextcloud-file-watcher/watch.sh) and runs a scoped
+  # `occ files:scan --path=...` (just that one folder) the moment a new
+  # file actually finishes writing.
+  nextcloud-file-watcher:
+    profiles: ["nextcloud-media-watch"]
+    build:
+      context: ./nextcloud-file-watcher
+      args:
+        NEXTCLOUD_TAG: ${NEXTCLOUD_TAG:-stable-fpm}
+    container_name: homedrive-nextcloud-file-watcher
+    restart: unless-stopped
+    logging: *default-logging
+
+    depends_on:
+      nextcloud-app:
+        condition: service_healthy
+
+    environment:
+      TZ: ${TZ}
+      WATCH_RELATIVE_PATH: ${NEXTCLOUD_WATCH_RELATIVE_PATH:-}
+      # occ needs a real DB/Redis connection to run at all, same as
+      # nextcloud-cron above.
+      POSTGRES_HOST: nextcloud-db
+      POSTGRES_DB: ${NEXTCLOUD_DB_NAME:-nextcloud}
+      POSTGRES_USER: ${NEXTCLOUD_DB_USER:-nextcloud}
+      POSTGRES_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
+      REDIS_HOST: nextcloud-redis
+      REDIS_HOST_PORT: "6379"
+      REDIS_HOST_PASSWORD: ${NEXTCLOUD_REDIS_PASSWORD}
+
+    volumes:
+      - nextcloud-html:/var/www/html
+      - type: bind
+        source: ${DATA_PATH}/nextcloud/data
+        target: /var/www/html/data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${DATA_PATH}/nextcloud/config
+        target: /var/www/html/config
+        bind:
+          create_host_path: false
+
+    security_opt:
+      - no-new-privileges:true
+
+  # ── 3. Tailscale (optional) — reach the drive from outside the LAN ───────
   # Off by default: only starts with `docker compose --profile tailscale up
   # -d` (or `up -d tailscale`). NEXTCLOUD_PORT above is completely
   # unaffected either way — this is an ADDITIONAL way in, not a replacement.
