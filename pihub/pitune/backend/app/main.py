@@ -24,6 +24,20 @@ frontend polls GET /api/save/{id}/status, backed by yt-dlp's own
 progress_hooks, to show a real progress bar and to tell an actual failure
 apart from "still working" instead of guessing from a single request
 timing out.
+
+/api/search's sort/duration/upload_date filters and /api/channel/{id} (a
+channel's own uploads, so "load more" works the same way there) are both
+built on _filter_and_sort/_entry_to_result, shared because both endpoints
+return the same flat, extract_flat "in_playlist" entry shape. Duration
+filtering is exact (flat entries always carry it); upload-date filtering is
+best-effort (see _entry_upload_epoch) since flat extraction doesn't always
+resolve an exact date without one extra request per video, which isn't
+worth paying just to filter. Neither endpoint supports true cursor-based
+pagination (ytsearch/a channel's uploads list don't expose one through
+yt-dlp); "load more" instead re-asks for a larger `limit` and the whole
+result set is re-filtered/re-sorted and re-rendered, not appended to,
+since a sort like "views" can legitimately reorder once more candidates
+are considered.
 """
 
 import asyncio
@@ -32,7 +46,10 @@ import os
 import re
 import secrets
 import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 import yt_dlp
 from fastapi import Depends, FastAPI, Header, HTTPException, Path as PathParam, Query
@@ -100,6 +117,12 @@ YTDLP_COOKIES_FILE = str(_COOKIES_FILE) if _COOKIES_FILE.is_file() and _COOKIES_
 # on their own.
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
+# Channel IDs are always "UC" + 22 URL-safe base64-ish characters. channel_id
+# becomes part of a URL handed straight to yt-dlp in _channel_url() below, so
+# this is validated the same defense-in-depth way as _VIDEO_ID_RE above:
+# FastAPI's own PathParam length bounds narrow it first, then this regex.
+_CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
+
 _EXT_MIME = {"webm": "audio/webm", "m4a": "audio/mp4", "mp3": "audio/mpeg", "opus": "audio/opus"}
 
 # Deliberately container-local, not a bind mount or named volume (see the
@@ -139,35 +162,178 @@ def _validate_video_id(video_id: str) -> str:
     return video_id
 
 
+def _validate_channel_id(channel_id: str) -> str:
+    if not _CHANNEL_ID_RE.match(channel_id):
+        raise HTTPException(status_code=400, detail="Invalid YouTube channel ID")
+    return channel_id
+
+
 def _video_url(video_id: str) -> str:
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
-def _run_search(query: str, limit: int) -> list[dict]:
-    """Blocking (network I/O) — always call via asyncio.to_thread."""
+def _channel_url(channel_id: str) -> str:
+    return f"https://www.youtube.com/channel/{channel_id}/videos"
+
+
+def _entry_to_result(entry: dict) -> dict:
+    thumbnails = entry.get("thumbnails") or []
+    return {
+        "id": entry.get("id"),
+        "title": entry.get("title"),
+        "artist": entry.get("uploader") or entry.get("channel"),
+        # Lets the frontend offer "view this channel's uploads" (see
+        # /api/channel/{id} below) without a second lookup; None on the rare
+        # entry that doesn't carry it, which the frontend just doesn't turn
+        # into a link rather than erroring.
+        "channelId": entry.get("channel_id"),
+        "duration": entry.get("duration"),
+        "thumbnail": thumbnails[-1]["url"] if thumbnails else None,
+        # Present on most flat search entries without needing a full
+        # per-video extraction (which would mean one real HTTP request
+        # per result instead of one for the whole search); None when
+        # YouTube's own search response happens not to include it, which
+        # the frontend just omits rather than showing "None views".
+        "viewCount": entry.get("view_count"),
+    }
+
+
+_DURATION_BUCKETS = {
+    "any": None,
+    "short": (0, 240),      # under 4 min
+    "medium": (240, 1200),  # 4-20 min
+    "long": (1200, None),   # over 20 min
+}
+_UPLOAD_DATE_WINDOW_SECONDS = {
+    "any": None,
+    "hour": 3600,
+    "today": 86400,
+    "week": 7 * 86400,
+    "month": 30 * 86400,
+    "year": 365 * 86400,
+}
+
+
+def _entry_upload_epoch(entry: dict) -> float | None:
+    """Best-effort only: flat ("in_playlist") entries don't always carry an
+    exact upload date, since that normally needs a full per-video extraction, one
+    extra request each, which isn't worth paying just to filter a search.
+    yt-dlp resolves YouTube's own relative "3 weeks ago" label into
+    timestamp/release_timestamp when it can; upload_date (a plain YYYYMMDD
+    string) is the fallback when only that's present. An entry with neither
+    is excluded from an upload_date-filtered result rather than guessed at,
+    see _filter_and_sort."""
+    ts = entry.get("timestamp") or entry.get("release_timestamp")
+    if ts:
+        try:
+            return float(ts)
+        except (TypeError, ValueError):
+            return None
+    upload_date = entry.get("upload_date")
+    if upload_date:
+        try:
+            return datetime.strptime(upload_date, "%Y%m%d").replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _filter_and_sort(entries: list[dict], *, sort: str, duration: str, upload_date: str) -> list[dict]:
+    """Applies to raw yt-dlp entries (not yet trimmed to the frontend's
+    result shape), so duration/upload_date/view_count are all still present
+    under yt-dlp's own field names. Order-preserving except for sort="views"
+    (an explicit re-sort): "relevance" and "date" both keep whatever order
+    yt-dlp/YouTube already returned the entries in (for "date", that's
+    already newest-first, from the ytsearchdate: scheme used to fetch them;
+    see _search_youtube)."""
+    dur_bounds = _DURATION_BUCKETS[duration]
+    window = _UPLOAD_DATE_WINDOW_SECONDS[upload_date]
+    now = time.time()
+
+    def keep(entry: dict) -> bool:
+        if dur_bounds is not None:
+            d = entry.get("duration")
+            if d is None:
+                return False
+            lo, hi = dur_bounds
+            if d < lo or (hi is not None and d >= hi):
+                return False
+        if window is not None:
+            epoch = _entry_upload_epoch(entry)
+            if epoch is None or (now - epoch) > window:
+                return False
+        return True
+
+    filtered = [e for e in entries if keep(e)]
+    if sort == "views":
+        filtered.sort(key=lambda e: e.get("view_count") or 0, reverse=True)
+    return filtered
+
+
+def _search_youtube(query: str, limit: int, sort: str, duration: str, upload_date: str) -> dict:
+    """Blocking (network I/O); always call via asyncio.to_thread.
+
+    A duration/upload_date filter can only ever narrow what yt-dlp returns,
+    never add to it, so asking for exactly `limit` raw results and then
+    filtering could easily leave far fewer than the caller wanted. There's no
+    way to ask YouTube's search for "N results after filtering" directly, so
+    this over-fetches a bounded multiple instead when a filter is active;
+    still an approximation; an unusual filter on a niche query can still come
+    back short. The no-filter path (the common case) is untouched: it fetches
+    exactly `limit`, same as before this existed."""
+    filters_active = duration != "any" or upload_date != "any"
+    fetch_count = min(limit * 4, 200) if filters_active else limit
+    # yt-dlp's own sort-by-upload-date search variant; "relevance" and
+    # "views" both use the plain scheme (views is a re-sort of the fetched
+    # batch in _filter_and_sort, not a different fetch).
+    scheme = "ytsearchdate" if sort == "date" else "ytsearch"
+
+    # Asks for one more than fetch_count actually needs, purely to answer
+    # "is there more" without ambiguity: getting back exactly fetch_count
+    # entries is consistent with either "that's every result there is" or
+    # "there's more, we just didn't ask for it", and there's no way to tell
+    # those apart after the fact. The extra entry (never returned to the
+    # caller) resolves that outright instead of guessing.
     opts = {**_BASE_OPTS, "extract_flat": "in_playlist", "skip_download": True}
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+        info = ydl.extract_info(f"{scheme}{fetch_count + 1}:{query}", download=False)
+    raw_entries = [e for e in (info.get("entries") or []) if e]
+    has_more = len(raw_entries) > fetch_count
+    raw_entries = raw_entries[:fetch_count]
 
-    results = []
-    for entry in info.get("entries") or []:
-        if not entry:
-            continue
-        thumbnails = entry.get("thumbnails") or []
-        results.append({
-            "id": entry.get("id"),
-            "title": entry.get("title"),
-            "artist": entry.get("uploader") or entry.get("channel"),
-            "duration": entry.get("duration"),
-            "thumbnail": thumbnails[-1]["url"] if thumbnails else None,
-            # Present on most flat search entries without needing a full
-            # per-video extraction (which would mean one real HTTP request
-            # per result instead of one for the whole search); None when
-            # YouTube's own search response happens not to include it, which
-            # the frontend just omits rather than showing "None views".
-            "viewCount": entry.get("view_count"),
-        })
-    return results
+    filtered = _filter_and_sort(raw_entries, sort=sort, duration=duration, upload_date=upload_date)
+    return {
+        "results": [_entry_to_result(e) for e in filtered[:limit]],
+        "hasMore": has_more,
+    }
+
+
+def _channel_videos(channel_id: str, limit: int, sort: str, duration: str, upload_date: str) -> dict:
+    """Blocking (network I/O); always call via asyncio.to_thread.
+    channel_id is already validated by the caller. Same over-fetch/filter
+    approach as _search_youtube; "date" doesn't get its own fetch scheme here
+    since a channel's uploads tab is already newest-first from YouTube
+    itself, so plain relevance-order fetching already gives that for free."""
+    filters_active = duration != "any" or upload_date != "any"
+    fetch_count = min(limit * 4, 200) if filters_active else limit
+
+    # See _search_youtube's own comment on the same "+1" trick for hasMore.
+    opts = {
+        **_BASE_OPTS, "extract_flat": "in_playlist", "skip_download": True,
+        "playliststart": 1, "playlistend": fetch_count + 1,
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(_channel_url(channel_id), download=False)
+    raw_entries = [e for e in (info.get("entries") or []) if e]
+    has_more = len(raw_entries) > fetch_count
+    raw_entries = raw_entries[:fetch_count]
+
+    filtered = _filter_and_sort(raw_entries, sort=sort, duration=duration, upload_date=upload_date)
+    return {
+        "channelName": info.get("channel") or info.get("uploader") or info.get("title") or "",
+        "results": [_entry_to_result(e) for e in filtered[:limit]],
+        "hasMore": has_more,
+    }
 
 
 def _download_for_stream(video_id: str) -> Path:
@@ -211,12 +377,38 @@ async def version():
 
 
 @app.get("/api/search")
-async def search(q: str = Query(..., min_length=1), limit: int = SEARCH_RESULT_LIMIT):
+async def search(
+    q: str = Query(..., min_length=1),
+    limit: int = SEARCH_RESULT_LIMIT,
+    sort: Literal["relevance", "date", "views"] = "relevance",
+    duration: Literal["any", "short", "medium", "long"] = "any",
+    upload_date: Literal["any", "hour", "today", "week", "month", "year"] = "any",
+):
     try:
-        results = await asyncio.to_thread(_run_search, q, max(1, min(limit, 50)))
+        data = await asyncio.to_thread(
+            _search_youtube, q, max(1, min(limit, 150)), sort, duration, upload_date
+        )
     except yt_dlp.utils.DownloadError as exc:
         raise HTTPException(status_code=502, detail=f"YouTube search failed: {exc}")
-    return {"results": results}
+    return data
+
+
+@app.get("/api/channel/{channel_id}")
+async def channel_videos(
+    channel_id: str = PathParam(..., min_length=24, max_length=24),
+    limit: int = 30,
+    sort: Literal["relevance", "date", "views"] = "relevance",
+    duration: Literal["any", "short", "medium", "long"] = "any",
+    upload_date: Literal["any", "hour", "today", "week", "month", "year"] = "any",
+):
+    channel_id = _validate_channel_id(channel_id)
+    try:
+        data = await asyncio.to_thread(
+            _channel_videos, channel_id, max(1, min(limit, 200)), sort, duration, upload_date
+        )
+    except yt_dlp.utils.DownloadError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not load channel: {exc}")
+    return data
 
 
 @app.get("/api/stream/{video_id}")

@@ -111,6 +111,24 @@ main {
 .search-bar { display: flex; gap: 0.5em; margin-bottom: 1em; }
 .search-bar input { flex: 1; }
 
+.yt-filters {
+  display: flex;
+  gap: 1.2em;
+  flex-wrap: wrap;
+  margin-bottom: 0.75em;
+  font-size: 0.8em;
+  color: var(--text-dim);
+}
+.yt-filters label { display: flex; flex-direction: column; gap: 0.25em; }
+.yt-filters select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35em 0.5em;
+}
+
 .login-box {
   max-width: 320px;
   display: flex;
@@ -206,9 +224,15 @@ main {
 .item-sub { color: var(--text-dim); font-size: 0.85em; }
 .item-duration { color: var(--text-dim); font-size: 0.85em; flex-shrink: 0; }
 .item-action { flex-shrink: 0; }
-.item-queue, .item-save, .item-star, .item-playlist-add { font-size: 1.1em; line-height: 1; }
+.item-queue, .item-save, .item-star, .item-playlist-add, .item-channel { font-size: 1.1em; line-height: 1; }
 .item-star { color: var(--text-dim); }
 .item-star.starred { color: var(--accent); border-color: var(--accent); }
+/* Shared by the Queue list (see renderQueue) and the YouTube tab's search/
+   channel results (see updateNowPlayingHighlights); the accent-colored text
+   from .item-row.playing already does most of the work, the thumbnail
+   outline is what makes it noticeable at a glance, without a thumbnail
+   (a plain icon row) to look at. */
+.item-row.playing .item-thumb { outline: 2px solid var(--accent); }
 .item-drag-handle {
   cursor: grab;
   /* Without this, a touchscreen treats the same gesture as "scroll the
@@ -240,7 +264,9 @@ main {
   flex-wrap: wrap;
 }
 
-.now-playing { min-width: 0; flex: 1 1 160px; }
+.now-playing { min-width: 0; flex: 1 1 160px; display: flex; align-items: center; gap: 0.6em; }
+.now-playing-text { min-width: 0; flex: 1; }
+.np-thumb { width: 40px; height: 40px; border-radius: 4px; object-fit: cover; flex-shrink: 0; background: var(--bg-elevated); }
 .track-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .track-artist { color: var(--text-dim); font-size: 0.85em; }
 .now-playing.loading .track-title { animation: np-loading-pulse 1.2s ease-in-out infinite; }

@@ -316,10 +316,40 @@
     handle.addEventListener("pointercancel", commitDrag);
   }
 
+  // Shared by renderNowPlaying and playIndex's own immediate "Loading…"
+  // state (playIndex already knows `track` synchronously and doesn't need to
+  // wait for the "playing" event to show its thumbnail too).
+  function setNowPlayingThumb(track) {
+    const thumb = document.getElementById("np-thumb");
+    if (track && track.thumbUrl) {
+      thumb.src = track.thumbUrl;
+      thumb.classList.remove("hidden");
+    } else {
+      thumb.removeAttribute("src");
+      thumb.classList.add("hidden");
+    }
+  }
+
+  // Mirrors the currently-playing track onto whichever list rows can show
+  // it: the Queue (rebuilt on every change anyway, handled in renderQueue
+  // itself via the "playing" class) and the YouTube tab's search/channel
+  // results, which stay mounted across a play (searching doesn't rebuild the
+  // list), so their highlight has to be pushed in from here instead of
+  // baked in at render time.
+  function updateNowPlayingHighlights() {
+    const current = queue[queueIndex];
+    const playingVideoId = current && current.source === "youtube" ? current.videoId : null;
+    ytResultRows.forEach((row, videoId) => {
+      row.classList.toggle("playing", videoId === playingVideoId);
+    });
+  }
+
   function renderNowPlaying() {
     const track = queue[queueIndex];
     document.getElementById("np-title").textContent = track ? track.title : "Nothing playing";
     document.getElementById("np-artist").textContent = track ? (track.artist || "") : "";
+    setNowPlayingThumb(track);
+    updateNowPlayingHighlights();
   }
 
   function playIndex(i) {
@@ -350,6 +380,8 @@
     document.getElementById("np-title").textContent = "Loading…";
     document.getElementById("np-artist").textContent = track.artist || "";
     document.querySelector(".now-playing").classList.add("loading");
+    setNowPlayingThumb(track); // known synchronously; no need to wait for "playing"
+    updateNowPlayingHighlights();
     audio.src = track.src;
     audio.play().catch((err) => console.warn("Playback failed:", err));
     if (track.source === "local" && track.id) {
@@ -776,7 +808,12 @@
     // handler can scrobble plays back to Navidrome; see their own
     // comments for why that, not anything PiTune stores itself, is what
     // "Most Played" and every play count are actually backed by.
-    const track = { title: s.title, artist: s.artist, src: Subsonic.streamUrl(s.id), source: "local", id: s.id };
+    const track = {
+      title: s.title, artist: s.artist, src: Subsonic.streamUrl(s.id), source: "local", id: s.id,
+      // Every Child (song) element carries its own coverArt id, usable
+      // directly with getCoverArt; no separate album lookup needed.
+      thumbUrl: s.coverArt ? Subsonic.coverArtUrl(s.coverArt) : null,
+    };
     const plays = s.playCount ? ` · ${s.playCount} play${s.playCount === 1 ? "" : "s"}` : "";
     return buildRow({
       icon: "🎵",
@@ -1097,52 +1134,182 @@
   });
 
   // ── YouTube search ──────────────────────────────────────────────────
-  document.getElementById("yt-search-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const q = document.getElementById("yt-search-input").value.trim();
-    if (!q) return;
+  // ytView holds whichever of the two YouTube-tab views is current: a text
+  // search, or a channel's uploads (opened from a search result's 📺
+  // button). Both are rendered through the same renderYtView()/buildYtRow()
+  // pair, since /api/search and /api/channel/{id} return the same result
+  // shape (see main.py's _entry_to_result) and behave the same way for
+  // sort/duration/upload_date filters and "load more".
+  //
+  // "Load more" grows `limit` and re-fetches+re-renders the WHOLE list from
+  // scratch rather than appending just the new tail: neither endpoint
+  // exposes a real cursor (ytsearch/a channel's uploads list don't have one
+  // to expose), and sort=views in particular can legitimately promote a
+  // video that only showed up once more candidates were considered, which a
+  // simple append would never reorder into place.
+  let ytView = null;
+  // videoId -> <li>, only ever holding the CURRENTLY rendered view's rows;
+  // replaced wholesale on every renderYtView() so updateNowPlayingHighlights
+  // (in the player section above) never touches a stale/removed row.
+  let ytResultRows = new Map();
+
+  const YT_SEARCH_BATCH = 20;
+  const YT_CHANNEL_BATCH = 30;
+
+  function currentYtFilters() {
+    return {
+      sort: document.getElementById("yt-filter-sort").value,
+      duration: document.getElementById("yt-filter-duration").value,
+      uploadDate: document.getElementById("yt-filter-date").value,
+    };
+  }
+
+  async function fetchYtSearch(view) {
+    const params = new URLSearchParams({
+      q: view.query, limit: view.limit, sort: view.sort,
+      duration: view.duration, upload_date: view.uploadDate,
+    });
+    const res = await fetch(`api/search?${params.toString()}`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  async function fetchYtChannel(view) {
+    const params = new URLSearchParams({
+      limit: view.limit, sort: view.sort, duration: view.duration, upload_date: view.uploadDate,
+    });
+    const res = await fetch(`api/channel/${view.channelId}?${params.toString()}`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  // Opens a search result's uploader as its own browsable view; `previous`
+  // is the search view being left, so the "← Search results" breadcrumb (see
+  // renderYtBreadcrumb) can return to it exactly as it was, filters and
+  // "load more" progress included, instead of resetting the search.
+  function openChannel(channelId, channelName, previous) {
+    ytView = { kind: "channel", channelId, channelName: channelName || "", limit: YT_CHANNEL_BATCH, previous };
+    renderYtView();
+  }
+
+  function buildYtRow(r) {
+    const track = {
+      title: r.title, artist: r.artist, src: `api/stream/${r.id}`, source: "youtube",
+      videoId: r.id, thumbUrl: r.thumbnail,
+    };
+    const views = r.viewCount != null ? ` · ${formatViewCount(r.viewCount)} views` : "";
+    const actions = [
+      { icon: "＋", title: "Add to queue", className: "item-queue", onClick: () => addToQueue(track) },
+      { icon: "⬇", title: "Save to library", className: "item-save", onClick: (btn) => saveToLibraryManually(r.id, btn) },
+    ];
+    // Not offered from inside a channel's own uploads (already looking at
+    // exactly this channel), only from a search result.
+    if (r.channelId && ytView.kind === "search") {
+      actions.push({
+        icon: "📺", title: `View uploads from ${r.artist || "this channel"}`, className: "item-channel",
+        onClick: () => openChannel(r.channelId, r.artist, ytView),
+      });
+    }
+    const row = buildRow({
+      thumbUrl: r.thumbnail, icon: "▶", title: r.title,
+      sub: (r.artist || "") + views,
+      durationText: r.duration ? formatTime(r.duration) : "",
+      onClick: () => enqueue(track),
+      actions,
+    });
+    ytResultRows.set(r.id, row);
+    return row;
+  }
+
+  function renderYtBreadcrumb() {
+    const el = document.getElementById("yt-breadcrumb");
+    el.innerHTML = "";
+    if (ytView.kind !== "channel") {
+      el.classList.add("hidden");
+      return;
+    }
+    const back = document.createElement("button");
+    back.textContent = "← Search results";
+    back.addEventListener("click", () => {
+      if (ytView.previous) { ytView = ytView.previous; renderYtView(); }
+    });
+    el.appendChild(back);
+    const label = document.createElement("span");
+    label.className = "item-sub";
+    label.textContent = ytView.channelName ? `Uploads from ${ytView.channelName}` : "Channel uploads";
+    el.appendChild(label);
+    el.classList.remove("hidden");
+    if (!ytView.previous) back.disabled = true; // opened with nothing to go back to (shouldn't normally happen)
+  }
+
+  async function renderYtView() {
     const list = document.getElementById("yt-results");
+    const loadMoreBtn = document.getElementById("yt-load-more");
     list.innerHTML = "";
+    ytResultRows = new Map();
+    loadMoreBtn.classList.add("hidden");
     const loading = document.createElement("li");
     loading.className = "item-sub";
-    loading.textContent = "Searching…";
+    loading.textContent = ytView.kind === "channel" ? "Loading channel…" : "Searching…";
     list.appendChild(loading);
+    renderYtBreadcrumb();
 
     try {
-      const res = await fetch(`api/search?q=${encodeURIComponent(q)}`);
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
+      const data = ytView.kind === "channel" ? await fetchYtChannel(ytView) : await fetchYtSearch(ytView);
+      if (ytView.kind === "channel" && data.channelName) {
+        ytView.channelName = data.channelName;
+        renderYtBreadcrumb(); // may have opened with only the search-row's artist name as a guess
+      }
       list.innerHTML = "";
       if (!data.results.length) {
         const empty = document.createElement("li");
         empty.className = "item-sub";
-        empty.textContent = "No results.";
+        empty.textContent = ytView.kind === "channel"
+          ? "No uploads match these filters."
+          : "No results.";
         list.appendChild(empty);
         return;
       }
-      data.results.forEach((r) => {
-        const track = { title: r.title, artist: r.artist, src: `api/stream/${r.id}`, source: "youtube", videoId: r.id };
-        const views = r.viewCount != null ? ` · ${formatViewCount(r.viewCount)} views` : "";
-        list.appendChild(buildRow({
-          thumbUrl: r.thumbnail,
-          icon: "▶",
-          title: r.title,
-          sub: (r.artist || "") + views,
-          durationText: r.duration ? formatTime(r.duration) : "",
-          onClick: () => enqueue(track),
-          actions: [
-            { icon: "＋", title: "Add to queue", className: "item-queue", onClick: () => addToQueue(track) },
-            { icon: "⬇", title: "Save to library", className: "item-save", onClick: (btn) => saveToLibraryManually(r.id, btn) },
-          ],
-        }));
-      });
+      data.results.forEach((r) => list.appendChild(buildYtRow(r)));
+      updateNowPlayingHighlights();
+      loadMoreBtn.classList.toggle("hidden", !data.hasMore);
+      loadMoreBtn.disabled = false;
+      loadMoreBtn.textContent = "Load more";
     } catch (err) {
       list.innerHTML = "";
       const errEl = document.createElement("li");
       errEl.className = "item-sub";
-      errEl.textContent = "Search failed: " + err.message;
+      errEl.textContent = (ytView.kind === "channel" ? "Could not load channel: " : "Search failed: ") + err.message;
       list.appendChild(errEl);
     }
+  }
+
+  document.getElementById("yt-search-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const q = document.getElementById("yt-search-input").value.trim();
+    if (!q) return;
+    ytView = { kind: "search", query: q, limit: YT_SEARCH_BATCH, ...currentYtFilters() };
+    renderYtView();
+  });
+
+  // Changing a filter restarts the current view from its first batch (not
+  // wherever "Load more" had grown it to), the same thing changing a filter
+  // on YouTube's own site does.
+  ["yt-filter-sort", "yt-filter-duration", "yt-filter-date"].forEach((id) => {
+    document.getElementById(id).addEventListener("change", () => {
+      if (!ytView) return;
+      Object.assign(ytView, currentYtFilters());
+      ytView.limit = ytView.kind === "channel" ? YT_CHANNEL_BATCH : YT_SEARCH_BATCH;
+      renderYtView();
+    });
+  });
+
+  document.getElementById("yt-load-more").addEventListener("click", (e) => {
+    if (!ytView) return;
+    ytView.limit += ytView.kind === "channel" ? YT_CHANNEL_BATCH : YT_SEARCH_BATCH;
+    e.target.disabled = true;
+    e.target.textContent = "Loading…";
+    renderYtView();
   });
 
   // ── Discover (not yet implemented) ─────────────────────────────────

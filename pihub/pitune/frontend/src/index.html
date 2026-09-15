@@ -79,7 +79,41 @@
         <input id="yt-search-input" type="search" placeholder="Search YouTube…" autocomplete="off">
         <button type="submit">Search</button>
       </form>
+      <!-- Filtering/sorting happens server-side (see main.py's _filter_and_sort);
+           changing any of these re-runs the current search or channel view
+           from its first batch. -->
+      <div class="yt-filters">
+        <label>Sort by
+          <select id="yt-filter-sort">
+            <option value="relevance">Relevance</option>
+            <option value="date">Upload date</option>
+            <option value="views">View count</option>
+          </select>
+        </label>
+        <label>Duration
+          <select id="yt-filter-duration">
+            <option value="any">Any</option>
+            <option value="short">Under 4 min</option>
+            <option value="medium">4-20 min</option>
+            <option value="long">Over 20 min</option>
+          </select>
+        </label>
+        <label>Upload date
+          <select id="yt-filter-date">
+            <option value="any">Any time</option>
+            <option value="hour">Last hour</option>
+            <option value="today">Today</option>
+            <option value="week">This week</option>
+            <option value="month">This month</option>
+            <option value="year">This year</option>
+          </select>
+        </label>
+      </div>
+      <!-- Shown only while browsing a channel's uploads (opened from a
+           search result's 📺 button); see app.js's renderYtBreadcrumb(). -->
+      <div class="breadcrumbs hidden" id="yt-breadcrumb"></div>
       <ul class="item-list" id="yt-results"></ul>
+      <button id="yt-load-more" class="library-load-more hidden">Load more</button>
     </section>
 
     <!-- Playback queue -->
@@ -114,8 +148,11 @@
 
   <footer class="player-bar hidden">
     <div class="now-playing">
-      <div class="track-title" id="np-title">Nothing playing</div>
-      <div class="track-artist" id="np-artist"></div>
+      <img id="np-thumb" class="np-thumb hidden" alt="">
+      <div class="now-playing-text">
+        <div class="track-title" id="np-title">Nothing playing</div>
+        <div class="track-artist" id="np-artist"></div>
+      </div>
     </div>
 
     <div class="transport">
