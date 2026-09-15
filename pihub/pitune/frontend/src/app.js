@@ -340,8 +340,12 @@
   function updateNowPlayingHighlights() {
     const current = queue[queueIndex];
     const playingVideoId = current && current.source === "youtube" ? current.videoId : null;
+    const playingSongId = current && current.source === "local" ? current.id : null;
     ytResultRows.forEach((row, videoId) => {
       row.classList.toggle("playing", videoId === playingVideoId);
+    });
+    libraryResultRows.forEach((row, songId) => {
+      row.classList.toggle("playing", songId === playingSongId);
     });
   }
 
@@ -701,6 +705,11 @@
     });
   }
 
+  // Callers build `rows` via .map(songRow) (or buildRow directly, for
+  // Albums/Artists), which is what actually populates libraryResultRows;
+  // by the time rows reach here that's already done, so resetting the map
+  // is the CALLER's job (before building rows), not this function's; see
+  // each section's own "fresh view" reset.
   function renderLibraryList(rows) {
     const list = document.getElementById("library-list");
     list.innerHTML = "";
@@ -710,6 +719,7 @@
     // here, so hiding it by default means Songs is the only place it's
     // ever visible.
     document.getElementById("library-load-more").classList.add("hidden");
+    updateNowPlayingHighlights(); // in case whatever's already playing is in this list
   }
 
   // A ping success at page load doesn't guarantee Navidrome stays up for
@@ -720,6 +730,7 @@
   function renderLibraryError(message) {
     const list = document.getElementById("library-list");
     list.innerHTML = "";
+    libraryResultRows = new Map();
     document.getElementById("library-load-more").classList.add("hidden");
     const li = document.createElement("li");
     li.className = "item-sub";
@@ -885,10 +896,20 @@
     playIndex(0);
   }
 
+  // songId -> <li>, mirroring ytResultRows in the YouTube tab section below:
+  // only ever holds whatever's CURRENTLY rendered in #library-list, so
+  // updateNowPlayingHighlights (see the player section above) never touches
+  // a stale/removed row. Cleared wherever the list is actually wiped
+  // (renderLibraryList, renderLibraryError, and the two places that bypass
+  // those to manage #library-list directly: showSongsSection's fresh start
+  // and the search form's "Searching…" placeholder), NOT on every
+  // loadMoreSongs() batch, since those APPEND to what's already showing.
+  let libraryResultRows = new Map();
+
   function songRow(s) {
     const track = songToTrack(s);
     const plays = s.playCount ? ` · ${s.playCount} play${s.playCount === 1 ? "" : "s"}` : "";
-    return buildRow({
+    const row = buildRow({
       icon: "🎵",
       title: s.title,
       sub: (s.artist || "") + plays,
@@ -896,6 +917,8 @@
       onClick: () => enqueue(track),
       actions: songRowActions(s, track),
     });
+    libraryResultRows.set(s.id, row);
+    return row;
   }
 
   function selectLibrarySection(name) {
@@ -1009,6 +1032,7 @@
         const songs = applyLibraryFilters((detail.album && detail.album.song) || []);
         songs.forEach((s) => list.appendChild(songRow(s)));
       });
+      updateNowPlayingHighlights(); // in case whatever's already playing is in this batch
       btn.textContent = "Load more";
       btn.disabled = false;
     } catch (err) {
@@ -1022,6 +1046,7 @@
     libraryStack = [{ label: "Songs", render: showSongsSection }];
     renderBreadcrumbs();
     songsSectionAlbumOffset = 0;
+    libraryResultRows = new Map();
     const list = document.getElementById("library-list");
     list.innerHTML = "";
     const hint = document.createElement("li");
@@ -1094,6 +1119,7 @@
   async function showAlbumSongs(albumId, albumName) {
     libraryStack.push({ label: albumName, render: () => showAlbumSongs(albumId, albumName) });
     renderBreadcrumbs();
+    libraryResultRows = new Map();
     try {
       const data = await Subsonic.getAlbum(albumId);
       const songs = (data.album && data.album.song) || [];
@@ -1107,6 +1133,7 @@
     selectLibrarySection("favorites");
     libraryStack = [{ label: "Favorites", render: showFavorites }];
     renderBreadcrumbs();
+    libraryResultRows = new Map();
     try {
       const data = await Subsonic.getStarred2();
       const songs = (data.starred2 && data.starred2.song) || [];
@@ -1141,6 +1168,10 @@
     selectLibrarySection("most-played");
     libraryStack = [{ label: "Most Played", render: showMostPlayed }];
     renderBreadcrumbs();
+    // Local rows here are built via songRow, same as everywhere else in the
+    // Library tab; the YouTube rows use buildYtRow with trackHighlight:
+    // false (see below), so only this one map needs resetting.
+    libraryResultRows = new Map();
     try {
       const res = await fetch(`api/playcount/top?limit=${MOST_PLAYED_SONG_COUNT}`);
       if (!res.ok) throw new Error(await res.text());
@@ -1193,6 +1224,7 @@
     selectLibrarySection("recent");
     libraryStack = [{ label: "Recently Added", render: showRecentlyAdded }];
     renderBreadcrumbs();
+    libraryResultRows = new Map();
     try {
       const albumData = await Subsonic.getAlbumList2("newest", RECENTLY_ADDED_ALBUM_POOL);
       const albums = (albumData.albumList2 && albumData.albumList2.album) || [];
@@ -1251,6 +1283,7 @@
   async function showPlaylistDetail(playlistId, name) {
     libraryStack.push({ label: name, render: () => showPlaylistDetail(playlistId, name) });
     renderBreadcrumbs();
+    libraryResultRows = new Map();
     try {
       const data = await Subsonic.getPlaylist(playlistId);
       const songs = (data.playlist && data.playlist.entry) || [];
@@ -1310,6 +1343,7 @@
     libraryStack = [{ label: `Search: ${query}`, render: () => document.getElementById("library-search-form").requestSubmit() }];
     renderBreadcrumbs();
     list.innerHTML = "";
+    libraryResultRows = new Map();
     const loading = document.createElement("li");
     loading.className = "item-sub";
     loading.textContent = "Searching…";
