@@ -66,6 +66,32 @@
             <input id="library-search-input" type="search" placeholder="Search your library…" autocomplete="off">
             <button type="submit">Search</button>
           </form>
+          <!-- Applied client-side (see app.js's applyLibraryFilters) to
+               Songs, Favorites, Recently Added, Playlist detail and Search
+               results, every section with full song metadata already in
+               hand. Not applied to Most Played, which is ranked by PiTune's
+               own play counter instead (see showMostPlayed). -->
+          <div class="yt-filters">
+            <label>Artist
+              <select id="library-filter-artist">
+                <option value="">All artists</option>
+              </select>
+            </label>
+            <label>Duration
+              <select id="library-filter-duration">
+                <option value="any">Any</option>
+                <option value="short">Under 4 min</option>
+                <option value="medium">4-20 min</option>
+                <option value="long">Over 20 min</option>
+              </select>
+            </label>
+            <label>Year from
+              <input id="library-filter-year-from" type="number" inputmode="numeric" placeholder="e.g. 1990">
+            </label>
+            <label>Year to
+              <input id="library-filter-year-to" type="number" inputmode="numeric" placeholder="e.g. 2020">
+            </label>
+          </div>
           <div class="breadcrumbs" id="library-breadcrumbs"></div>
           <ul class="item-list" id="library-list"></ul>
           <button id="library-load-more" class="library-load-more hidden">Load more</button>
@@ -168,7 +194,7 @@
     </div>
 
     <div class="volume">
-      <span>🔊</span>
+      <button id="np-mute" class="mute-btn" title="Mute">🔊</button>
       <input id="np-volume" type="range" min="0" max="100" value="80">
     </div>
   </footer>

@@ -113,7 +113,7 @@ mkdir -p \
   "$media_root"/photos \
   "$media_root"/downloads \
   "$media_root"/backups
-mkdir -p ./navidrome/data ./jellyfin/config
+mkdir -p ./navidrome/data ./jellyfin/config ./pitune/backend/data
 
 # If .env redirects the streamable library elsewhere, jellyfin's and
 # navidrome's binds point there instead — and those four folders are

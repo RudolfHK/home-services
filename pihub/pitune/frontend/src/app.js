@@ -124,6 +124,7 @@
     getArtists() { return this.call("getArtists"); },
     getArtist(id) { return this.call("getArtist", { id }); },
     getAlbum(id) { return this.call("getAlbum", { id }); },
+    getSong(id) { return this.call("getSong", { id }); },
     getRandomSongs(size) { return this.call("getRandomSongs", { size }); },
     getAlbumList2(type, size, offset) { return this.call("getAlbumList2", { type, size, offset: offset || 0 }); },
     getStarred2() { return this.call("getStarred2"); },
@@ -452,6 +453,26 @@
     }
   }
 
+  // ── PiTune's own play counter (separate from Navidrome's scrobble) ─────
+  // Navidrome only ever knows about local library songs; a YouTube track
+  // earns no play count anywhere until it's saved into the library, and
+  // even saved ones only showed up in "Most Played" via a random sample
+  // (Subsonic has no real "most played" endpoint). Recording a play here,
+  // for both sources, on the same "natural finish only" condition as
+  // Navidrome's own scrobble(id, true) below, is what makes /api/playcount/
+  // top an exact ranking across local AND YouTube tracks. See showMostPlayed
+  // and main.py's module docstring.
+  function recordPlay(track) {
+    const source = track && track.source === "youtube" ? "youtube" : track && track.source === "local" ? "local" : null;
+    const id = source === "youtube" ? track.videoId : source === "local" ? track.id : null;
+    if (!source || !id) return;
+    const headers = { "Content-Type": "application/json" };
+    if (window.PIHUB_API_TOKEN) headers["X-PiHub-Token"] = window.PIHUB_API_TOKEN;
+    const body = source === "youtube" ? { title: track.title, artist: track.artist, thumbnail: track.thumbUrl } : {};
+    fetch(`api/playcount/${source}/${id}`, { method: "POST", headers, body: JSON.stringify(body) })
+      .catch((err) => console.warn("Recording play count failed:", err));
+  }
+
   // Explicit, user-triggered save from a YouTube search result (the ⬇
   // button); unlike maybeAutoSaveToLibrary above, which fires silently once
   // a track finishes playing naturally, this one shows a real progress bar
@@ -519,10 +540,12 @@
     // submission=true only on a real, natural finish (this event fires for
     // that and nothing else, not skip/prev/next, which just replace
     // audio.src instead); a track abandoned partway through isn't "a
-    // play" the way Navidrome's own playCount means it.
+    // play" the way Navidrome's own playCount (or PiTune's own, below)
+    // means it.
     if (finished && finished.source === "local" && finished.id) {
       Subsonic.scrobble(finished.id, true).catch((err) => console.warn("Scrobble failed:", err));
     }
+    recordPlay(finished); // PiTune's own counter, local AND YouTube alike
     playIndex(queueIndex + 1);
   });
   audio.addEventListener("play", () => { document.getElementById("btn-playpause").textContent = "⏸"; });
@@ -550,10 +573,36 @@
     if (audio.duration) audio.currentTime = (e.target.value / 100) * audio.duration;
     seeking = false;
   });
-  document.getElementById("np-volume").addEventListener("input", (e) => {
+  const volumeSlider = document.getElementById("np-volume");
+  const muteBtn = document.getElementById("np-mute");
+  // Remembered across a mute/unmute cycle so clicking the speaker icon
+  // restores whatever level was actually in use, not a hardcoded default;
+  // only updated when NOT muted, so muting itself never overwrites it.
+  let volumeBeforeMute = 0.8;
+
+  function updateMuteIcon() {
+    if (audio.volume === 0) { muteBtn.textContent = "🔇"; muteBtn.title = "Unmute"; }
+    else if (audio.volume < 0.5) { muteBtn.textContent = "🔉"; muteBtn.title = "Mute"; }
+    else { muteBtn.textContent = "🔊"; muteBtn.title = "Mute"; }
+  }
+
+  volumeSlider.addEventListener("input", (e) => {
     audio.volume = e.target.value / 100;
+    if (audio.volume > 0) volumeBeforeMute = audio.volume;
+    updateMuteIcon();
+  });
+  muteBtn.addEventListener("click", () => {
+    if (audio.volume > 0) {
+      volumeBeforeMute = audio.volume; // in case the slider was never touched this session
+      audio.volume = 0;
+    } else {
+      audio.volume = volumeBeforeMute || 0.8;
+    }
+    volumeSlider.value = audio.volume * 100;
+    updateMuteIcon();
   });
   audio.volume = 0.8;
+  updateMuteIcon();
 
   // ── Tabs ────────────────────────────────────────────────────────────
   document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -594,6 +643,7 @@
       document.getElementById("library-connection-error").classList.add("hidden");
       document.getElementById("library-browser").classList.remove("hidden");
       showArtists();
+      populateLibraryFilterArtists();
     } catch (err) {
       document.getElementById("library-browser").classList.add("hidden");
       if (err.authFailed) {
@@ -803,17 +853,40 @@
     }
   }
 
-  function songRow(s) {
-    // id travels with the track specifically so playIndex()/the "ended"
-    // handler can scrobble plays back to Navidrome; see their own
-    // comments for why that, not anything PiTune stores itself, is what
-    // "Most Played" and every play count are actually backed by.
-    const track = {
+  // Shared by songRow below and playTracks (playlist sequence/shuffle
+  // playback, see showPlaylistDetail): id travels with the track
+  // specifically so playIndex()/the "ended" handler can scrobble plays back
+  // to Navidrome and record a PiTune play count; see their own comments.
+  function songToTrack(s) {
+    return {
       title: s.title, artist: s.artist, src: Subsonic.streamUrl(s.id), source: "local", id: s.id,
       // Every Child (song) element carries its own coverArt id, usable
       // directly with getCoverArt; no separate album lookup needed.
       thumbUrl: s.coverArt ? Subsonic.coverArtUrl(s.coverArt) : null,
     };
+  }
+
+  // Replaces the queue outright with `tracks` (in order, or shuffled) and
+  // starts playing from the front, distinct from enqueue()/addToQueue(),
+  // which only ever add ONE track, since "play this whole playlist" means
+  // starting fresh, not appending after whatever was already queued.
+  function playTracks(tracks, { shuffle = false } = {}) {
+    const ordered = tracks.slice();
+    if (shuffle) {
+      // Fisher-Yates: uniform, in-place, O(n).
+      for (let i = ordered.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [ordered[i], ordered[j]] = [ordered[j], ordered[i]];
+      }
+    }
+    queue = ordered;
+    queueIndex = -1;
+    renderQueue();
+    playIndex(0);
+  }
+
+  function songRow(s) {
+    const track = songToTrack(s);
     const plays = s.playCount ? ` · ${s.playCount} play${s.playCount === 1 ? "" : "s"}` : "";
     return buildRow({
       icon: "🎵",
@@ -828,6 +901,80 @@
   function selectLibrarySection(name) {
     document.querySelectorAll(".library-nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.section === name));
   }
+
+  // ── Library filters (artist / duration / year) ─────────────────────────
+  // Applied client-side to every section that already has full song
+  // metadata in hand (Songs, Favorites, Recently Added, Playlist detail,
+  // Search), Subsonic has no server-side equivalent of this combination,
+  // but every field involved (artist, duration, year) already comes back on
+  // every Child (song) element for free, so filtering after the fact costs
+  // nothing extra network-wise. Deliberately NOT applied to Most Played,
+  // which is ranked by PiTune's own play counter rather than by browsing a
+  // full song list (see showMostPlayed).
+  const DURATION_BUCKETS = { short: [0, 240], medium: [240, 1200], long: [1200, Infinity] };
+
+  function currentLibraryFilters() {
+    const yearFrom = document.getElementById("library-filter-year-from").value;
+    const yearTo = document.getElementById("library-filter-year-to").value;
+    return {
+      artist: document.getElementById("library-filter-artist").value,
+      duration: document.getElementById("library-filter-duration").value,
+      yearFrom: yearFrom ? Number(yearFrom) : null,
+      yearTo: yearTo ? Number(yearTo) : null,
+    };
+  }
+
+  function libraryFiltersActive() {
+    const f = currentLibraryFilters();
+    return !!f.artist || f.duration !== "any" || f.yearFrom != null || f.yearTo != null;
+  }
+
+  function applyLibraryFilters(songs) {
+    const { artist, duration, yearFrom, yearTo } = currentLibraryFilters();
+    if (!artist && duration === "any" && yearFrom == null && yearTo == null) return songs;
+    return songs.filter((s) => {
+      if (artist && s.artist !== artist) return false;
+      if (duration !== "any") {
+        const [lo, hi] = DURATION_BUCKETS[duration];
+        if (s.duration == null || s.duration < lo || s.duration >= hi) return false;
+      }
+      if (yearFrom != null && (!s.year || s.year < yearFrom)) return false;
+      if (yearTo != null && (!s.year || s.year > yearTo)) return false;
+      return true;
+    });
+  }
+
+  // Populated once after login (see initLibrary); getArtists() is already
+  // the whole-library artist index, so no extra request is needed beyond
+  // the one Artists already makes for its own sidebar section.
+  async function populateLibraryFilterArtists() {
+    const select = document.getElementById("library-filter-artist");
+    try {
+      const data = await Subsonic.getArtists();
+      const index = (data.artists && data.artists.index) || [];
+      const artists = index.flatMap((idx) => idx.artist || []).map((a) => a.name).sort();
+      artists.forEach((name) => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        select.appendChild(opt);
+      });
+    } catch (err) {
+      console.warn("Could not load artists for the library filter bar:", err);
+    }
+  }
+
+  // Changing a filter re-runs whichever section (or search) is currently
+  // active from scratch, the same "start over, don't try to patch what's
+  // already rendered" approach the YouTube tab's own filters use.
+  ["library-filter-artist", "library-filter-duration", "library-filter-year-from", "library-filter-year-to"].forEach((id) => {
+    document.getElementById(id).addEventListener("change", () => {
+      const query = document.getElementById("library-search-input").value.trim();
+      if (query) { document.getElementById("library-search-form").requestSubmit(); return; }
+      const activeBtn = document.querySelector(".library-nav-btn.active");
+      if (activeBtn) librarySections[activeBtn.dataset.section]();
+    });
+  });
 
   // Subsonic has no endpoint for "list every song, paginated"; only
   // albums support offset-based paging (getAlbumList2). This section
@@ -859,7 +1006,7 @@
         .filter((r) => r.status === "fulfilled").map((r) => r.value);
       const list = document.getElementById("library-list");
       albumDetails.forEach((detail) => {
-        const songs = (detail.album && detail.album.song) || [];
+        const songs = applyLibraryFilters((detail.album && detail.album.song) || []);
         songs.forEach((s) => list.appendChild(songRow(s)));
       });
       btn.textContent = "Load more";
@@ -967,21 +1114,27 @@
         renderLibraryError("No favorites yet. Star a song anywhere in the library to add one.");
         return;
       }
-      renderLibraryList(songs.map(songRow));
+      const filtered = applyLibraryFilters(songs);
+      if (!filtered.length) {
+        renderLibraryError("No favorites match these filters.");
+        return;
+      }
+      renderLibraryList(filtered.map(songRow));
     } catch (err) {
       renderLibraryError("Could not load favorites: " + err.message);
     }
   }
 
-  // Same underlying gap as "Recently Added": Subsonic has no "most played
-  // songs" call, only getTopSongs (one specific ARTIST's top tracks, not
-  // library-wide). This pulls a large random sample, same source as the
-  // Songs section, and sorts it by playCount; an approximation of the
-  // true most-played list, not a guarantee, but every playCount in it is
-  // real (Navidrome's own, incremented via scrobble; see playIndex/the
-  // "ended" handler), so a bigger sample only ever makes this MORE
-  // accurate, never wrong in a misleading way.
-  const MOST_PLAYED_SAMPLE_SIZE = 500;
+  // Used to be a large random sample of local songs re-sorted by Navidrome's
+  // playCount: an approximation (Subsonic has no "most played" endpoint,
+  // only getTopSongs for one specific artist), and local-only, since a
+  // YouTube track earns no play count anywhere until it's saved into the
+  // library. Now backed by PiTune's own play counter (main.py's
+  // /api/playcount/top, recorded on every natural finish (see recordPlay),
+  // which is an exact top-N ranking, not a sample, and covers YouTube
+  // tracks too. Local rows still show Navidrome's own count in their sub-
+  // line (via songRow, unchanged); PiTune's own count decides the RANKING
+  // here, it doesn't replace what's displayed for a song already in Navidrome.
   const MOST_PLAYED_SONG_COUNT = 20;
 
   async function showMostPlayed() {
@@ -989,16 +1142,36 @@
     libraryStack = [{ label: "Most Played", render: showMostPlayed }];
     renderBreadcrumbs();
     try {
-      const data = await Subsonic.getRandomSongs(MOST_PLAYED_SAMPLE_SIZE);
-      const songs = ((data.randomSongs && data.randomSongs.song) || []).filter((s) => s.playCount > 0);
-      if (!songs.length) {
-        renderLibraryError("Nothing played yet. Play counts come from Navidrome, so this fills in as you listen.");
+      const res = await fetch(`api/playcount/top?limit=${MOST_PLAYED_SONG_COUNT}`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      if (!data.results.length) {
+        renderLibraryError("Nothing played yet. PiTune counts plays itself now, local library and YouTube both, so this fills in as you listen.");
         return;
       }
-      songs.sort((a, b) => (b.playCount || 0) - (a.playCount || 0));
-      renderLibraryList(songs.slice(0, MOST_PLAYED_SONG_COUNT).map(songRow));
+      // Local entries only ever store an id + count (see main.py's
+      // PlayMeta); getSong fetches the rest fresh from Navidrome rather
+      // than caching a second copy of title/artist/starred/coverArt here
+      // that could drift out of sync with the library. A song deleted
+      // since it was last played 404s and is just left out, same as any
+      // other section's allSettled-style resilience to a missing item.
+      const rows = await Promise.all(data.results.map(async (r) => {
+        if (r.source === "youtube") {
+          return buildYtRow(
+            { id: r.id, title: r.title, artist: r.artist, thumbnail: r.thumbnail, channelId: null, duration: null, viewCount: null },
+            { showChannelButton: false, trackHighlight: false, extraSub: ` · ${r.count} play${r.count === 1 ? "" : "s"}` },
+          );
+        }
+        try {
+          const songData = await Subsonic.getSong(r.id);
+          return songRow(songData.song);
+        } catch {
+          return null;
+        }
+      }));
+      renderLibraryList(rows.filter(Boolean));
     } catch (err) {
-      renderLibraryError("Could not load most-played songs: " + err.message);
+      renderLibraryError("Could not load most-played: " + err.message);
     }
   }
 
@@ -1027,8 +1200,12 @@
       // must not abort every other album's songs along with it.
       const albumDetails = (await Promise.allSettled(albums.map((al) => Subsonic.getAlbum(al.id))))
         .filter((r) => r.status === "fulfilled").map((r) => r.value);
-      const songs = albumDetails.flatMap((detail) => (detail.album && detail.album.song) || []);
+      const songs = applyLibraryFilters(albumDetails.flatMap((detail) => (detail.album && detail.album.song) || []));
       songs.sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0));
+      if (!songs.length) {
+        renderLibraryError("No recently added songs match these filters.");
+        return;
+      }
       renderLibraryList(songs.slice(0, RECENTLY_ADDED_SONG_COUNT).map(songRow));
     } catch (err) {
       renderLibraryError("Could not load recently added songs: " + err.message);
@@ -1081,7 +1258,24 @@
         renderLibraryError("This playlist is empty. Use a song's 📋 button anywhere in the library to add one.");
         return;
       }
-      renderLibraryList(songs.map(songRow));
+      const filtered = applyLibraryFilters(songs);
+      if (!filtered.length) {
+        renderLibraryError("No songs in this playlist match these filters.");
+        return;
+      }
+      // Play/Shuffle act on the FILTERED list, matching what's actually
+      // shown below, not the playlist's full, unfiltered contents.
+      const controls = document.createElement("li");
+      controls.className = "library-action-row";
+      const playBtn = document.createElement("button");
+      playBtn.textContent = "▶ Play all";
+      playBtn.addEventListener("click", () => playTracks(filtered.map(songToTrack)));
+      const shuffleBtn = document.createElement("button");
+      shuffleBtn.textContent = "🔀 Shuffle";
+      shuffleBtn.addEventListener("click", () => playTracks(filtered.map(songToTrack), { shuffle: true }));
+      controls.appendChild(playBtn);
+      controls.appendChild(shuffleBtn);
+      renderLibraryList([controls, ...filtered.map(songRow)]);
     } catch (err) {
       renderLibraryError("Could not load playlist: " + err.message);
     }
@@ -1127,7 +1321,12 @@
         renderLibraryError(`No songs matched "${query}".`);
         return;
       }
-      renderLibraryList(songs.map(songRow));
+      const filtered = applyLibraryFilters(songs);
+      if (!filtered.length) {
+        renderLibraryError(`"${query}" matched songs, but none of them match the current filters.`);
+        return;
+      }
+      renderLibraryList(filtered.map(songRow));
     } catch (err) {
       renderLibraryError("Search failed: " + err.message);
     }
@@ -1192,7 +1391,11 @@
     renderYtView();
   }
 
-  function buildYtRow(r) {
+  // options lets callers outside the YouTube tab's own view (Most Played,
+  // see showMostPlayed) reuse this without depending on module-level
+  // `ytView`: showChannelButton/extraSub/trackHighlight are all decided by
+  // the caller instead of inferred from whatever view happens to be current.
+  function buildYtRow(r, { showChannelButton = false, extraSub = "", trackHighlight = true } = {}) {
     const track = {
       title: r.title, artist: r.artist, src: `api/stream/${r.id}`, source: "youtube",
       videoId: r.id, thumbUrl: r.thumbnail,
@@ -1202,9 +1405,7 @@
       { icon: "＋", title: "Add to queue", className: "item-queue", onClick: () => addToQueue(track) },
       { icon: "⬇", title: "Save to library", className: "item-save", onClick: (btn) => saveToLibraryManually(r.id, btn) },
     ];
-    // Not offered from inside a channel's own uploads (already looking at
-    // exactly this channel), only from a search result.
-    if (r.channelId && ytView.kind === "search") {
+    if (r.channelId && showChannelButton) {
       actions.push({
         icon: "📺", title: `View uploads from ${r.artist || "this channel"}`, className: "item-channel",
         onClick: () => openChannel(r.channelId, r.artist, ytView),
@@ -1212,12 +1413,18 @@
     }
     const row = buildRow({
       thumbUrl: r.thumbnail, icon: "▶", title: r.title,
-      sub: (r.artist || "") + views,
+      sub: (r.artist || "") + views + extraSub,
       durationText: r.duration ? formatTime(r.duration) : "",
       onClick: () => enqueue(track),
       actions,
     });
-    ytResultRows.set(r.id, row);
+    // Only the YouTube tab's own rows participate in live now-playing
+    // highlighting (see updateNowPlayingHighlights): ytResultRows is wiped
+    // wholesale on every renderYtView(), so a row from somewhere else
+    // (Most Played) registering here would just go stale the next time
+    // that tab is used, for no real benefit; Most Played is re-rendered
+    // fresh every visit anyway.
+    if (trackHighlight) ytResultRows.set(r.id, row);
     return row;
   }
 
@@ -1270,7 +1477,7 @@
         list.appendChild(empty);
         return;
       }
-      data.results.forEach((r) => list.appendChild(buildYtRow(r)));
+      data.results.forEach((r) => list.appendChild(buildYtRow(r, { showChannelButton: ytView.kind === "search" })));
       updateNowPlayingHighlights();
       loadMoreBtn.classList.toggle("hidden", !data.hasMore);
       loadMoreBtn.disabled = false;

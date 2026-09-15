@@ -120,7 +120,7 @@ main {
   color: var(--text-dim);
 }
 .yt-filters label { display: flex; flex-direction: column; gap: 0.25em; }
-.yt-filters select {
+.yt-filters select, .yt-filters input[type="number"] {
   font: inherit;
   color: var(--text);
   background: var(--bg-elevated);
@@ -128,6 +128,7 @@ main {
   border-radius: 6px;
   padding: 0.35em 0.5em;
 }
+.yt-filters input[type="number"] { width: 6em; }
 
 .login-box {
   max-width: 320px;
@@ -172,7 +173,7 @@ main {
 .library-nav-btn.active { background: var(--bg-elevated); color: var(--accent); border-color: var(--border); }
 .library-content { flex: 1; min-width: 0; }
 .library-section-hint { color: var(--text-dim); font-size: 0.85em; margin-bottom: 0.75em; }
-.library-action-row { padding: 0.3em 0.5em 0.75em; }
+.library-action-row { display: flex; gap: 0.5em; padding: 0.3em 0.5em 0.75em; }
 .library-load-more { display: block; width: 100%; margin-top: 0.75em; }
 .library-load-more:disabled { opacity: 0.6; cursor: default; }
 
@@ -290,6 +291,8 @@ main {
 
 .volume { display: flex; align-items: center; gap: 0.4em; flex: 0 1 120px; }
 .volume input[type="range"] { flex: 1; }
+.mute-btn { border: none; background: none; padding: 0; font-size: 1.2em; line-height: 1; }
+.mute-btn:hover { border: none; }
 
 /* ── Mobile ──────────────────────────────────────────────────────────── */
 @media (max-width: 640px) {

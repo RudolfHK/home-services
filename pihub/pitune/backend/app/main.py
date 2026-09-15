@@ -38,9 +38,24 @@ yt-dlp); "load more" instead re-asks for a larger `limit` and the whole
 result set is re-filtered/re-sorted and re-rendered, not appended to,
 since a sort like "views" can legitimately reorder once more candidates
 are considered.
+
+/api/playcount/{source}/{id} is PiTune's OWN play counter, separate from
+Navidrome's. It exists because Navidrome only ever knows about local
+library songs (scrobble() stays the source of truth for those, and this
+doesn't replace it); a YouTube track never earns a single play count
+anywhere until it's saved into the library, which meant "Most Played"
+could only ever show already-saved tracks, and even then only via a random
+sample (Subsonic has no "most played" endpoint, only getTopSongs for one
+artist). Recording a play here on every natural finish, for both local and
+YouTube tracks alike, is what lets /api/playcount/top return a real,
+exact top-N ranking across both instead of an approximation, persisted to
+PLAY_COUNTS_PATH (a small JSON file, atomically rewritten, see
+_save_play_counts) so it survives a container restart the same way
+Navidrome's own counts do.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -55,6 +70,7 @@ import yt_dlp
 from fastapi import Depends, FastAPI, Header, HTTPException, Path as PathParam, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 logger = logging.getLogger("pitune.backend")
 logging.basicConfig(level=logging.INFO)
@@ -143,6 +159,64 @@ _SAVE_PROGRESS_LOCK = threading.Lock()
 # collect one mid-download (a real risk for a Task nothing else holds onto).
 _background_tasks: set = set()
 
+# Local library song IDs are Navidrome's own (UUID-shaped in practice, but
+# that's not a documented guarantee); this is a generic, generous bound
+# rather than assuming that exact shape, since nothing here needs to parse
+# the ID, only store it as a dict key.
+_LOCAL_TRACK_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+# Deliberately a bind mount (see docker-compose.yml's PITUNE_DATA_PATH),
+# unlike _STREAM_CACHE_DIR above: play counts are real, meaningful user data
+# (the whole point is that it survives a restart the way Navidrome's own
+# counts do), not a disposable cache.
+PLAY_COUNTS_PATH = Path(os.environ.get("PLAY_COUNTS_PATH", "/data/play_counts.json"))
+_PLAY_COUNTS_LOCK = threading.Lock()
+
+
+def _load_play_counts() -> dict:
+    try:
+        return json.loads(PLAY_COUNTS_PATH.read_text())
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, OSError) as exc:
+        # A corrupted file (e.g. a container killed mid-write before atomic
+        # writes existed, or before this feature existed at all) shouldn't
+        # take the whole backend down on startup; losing accumulated counts
+        # is unfortunate, not catastrophic, and they start accumulating
+        # again from here.
+        logger.warning("Could not read %s, starting with empty play counts: %s", PLAY_COUNTS_PATH, exc)
+        return {}
+
+
+# Loaded once at startup, kept in memory, and rewritten to disk on every
+# change; this process is the only writer, so there's no risk of another
+# process's concurrent edit being silently overwritten.
+_play_counts: dict = _load_play_counts()
+
+
+def _save_play_counts() -> None:
+    """Write-then-rename instead of writing PLAY_COUNTS_PATH directly: a
+    container killed mid-write (a Pi losing power, say) must never leave
+    play_counts.json half-written and unreadable on next start. os.replace
+    (via Path.replace) is a single filesystem rename, so the file is always
+    either the complete old version or the complete new one, never a
+    truncated in-between."""
+    PLAY_COUNTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = PLAY_COUNTS_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(_play_counts))
+    tmp.replace(PLAY_COUNTS_PATH)
+
+
+class PlayMeta(BaseModel):
+    # Only meaningful (and only ever supplied) for source="youtube": a local
+    # library song's title/artist/etc. is always fetched fresh from
+    # Navidrome instead (see app.js's showMostPlayed), so it's never stale
+    # relative to the library itself.
+    title: str | None = None
+    artist: str | None = None
+    thumbnail: str | None = None
+
+
 app = FastAPI(title="PiTune backend")
 app.add_middleware(
     CORSMiddleware,
@@ -166,6 +240,14 @@ def _validate_channel_id(channel_id: str) -> str:
     if not _CHANNEL_ID_RE.match(channel_id):
         raise HTTPException(status_code=400, detail="Invalid YouTube channel ID")
     return channel_id
+
+
+def _validate_track_id(source: str, track_id: str) -> str:
+    if source == "youtube":
+        return _validate_video_id(track_id)
+    if not _LOCAL_TRACK_ID_RE.match(track_id):
+        raise HTTPException(status_code=400, detail="Invalid track ID")
+    return track_id
 
 
 def _video_url(video_id: str) -> str:
@@ -510,6 +592,51 @@ async def save_status(video_id: str = PathParam(..., min_length=11, max_length=1
     if not state:
         return {"status": "idle", "percent": None, "error": None}
     return state
+
+
+# A POST that mutates state on disk, same threat model as /api/save above
+# (a malicious webpage's blind cross-origin POST, a "simple request" CORS
+# does nothing to stop): gated behind the same token rather than left open
+# like the read-only /api/search and /api/stream.
+@app.post("/api/playcount/{source}/{track_id}", dependencies=[Depends(require_token)])
+async def record_play(source: Literal["local", "youtube"], track_id: str, meta: PlayMeta | None = None):
+    track_id = _validate_track_id(source, track_id)
+    key = f"{source}:{track_id}"
+    with _PLAY_COUNTS_LOCK:
+        entry = _play_counts.get(key, {"count": 0})
+        entry["count"] = entry.get("count", 0) + 1
+        if source == "youtube" and meta:
+            if meta.title:
+                entry["title"] = meta.title
+            if meta.artist:
+                entry["artist"] = meta.artist
+            if meta.thumbnail:
+                entry["thumbnail"] = meta.thumbnail
+        _play_counts[key] = entry
+        _save_play_counts()
+    return {"count": entry["count"]}
+
+
+@app.get("/api/playcount/top")
+async def top_play_counts(limit: int = 20, source: Literal["local", "youtube", "all"] = "all"):
+    with _PLAY_COUNTS_LOCK:
+        items = list(_play_counts.items())
+
+    results = []
+    for key, entry in items:
+        entry_source, _, track_id = key.partition(":")
+        if source != "all" and entry_source != source:
+            continue
+        results.append({
+            "source": entry_source,
+            "id": track_id,
+            "count": entry.get("count", 0),
+            "title": entry.get("title"),
+            "artist": entry.get("artist"),
+            "thumbnail": entry.get("thumbnail"),
+        })
+    results.sort(key=lambda r: r["count"], reverse=True)
+    return {"results": results[: max(1, min(limit, 200))]}
 
 
 # ── Discover: not implemented yet ───────────────────────────────────────

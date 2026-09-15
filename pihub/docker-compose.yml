@@ -327,6 +327,15 @@ services:
         bind:
           create_host_path: false
       - ytdlp-cache:/cache
+      # PiTune's own play-count tracker (see app/main.py's PLAY_COUNTS_PATH):
+      # real user data, so a bind mount like NAVIDROME_DATA_PATH/
+      # JELLYFIN_CONFIG_PATH above (host-visible, covered by
+      # scripts/backup.sh), not a disposable cache like ytdlp-cache.
+      - type: bind
+        source: ${PITUNE_DATA_PATH:-./pitune/backend/data}
+        target: /data
+        bind:
+          create_host_path: false
 
     security_opt:
       - no-new-privileges:true

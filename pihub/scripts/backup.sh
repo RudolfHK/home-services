@@ -13,6 +13,7 @@ cd "$(dirname "$0")/.."
 MEDIA_ROOT="${MEDIA_ROOT:-/mnt/data/pihub}"
 NAVIDROME_DATA_PATH="${NAVIDROME_DATA_PATH:-./navidrome/data}"
 JELLYFIN_CONFIG_PATH="${JELLYFIN_CONFIG_PATH:-./jellyfin/config}"
+PITUNE_DATA_PATH="${PITUNE_DATA_PATH:-./pitune/backend/data}"
 BACKUP_DEST="${BACKUP_DEST:-$MEDIA_ROOT/backups}"
 BACKUP_KEEP="${BACKUP_KEEP:-7}"
 
@@ -25,7 +26,8 @@ echo "Backing up config to $archive"
 tar -czf "$archive" \
   --exclude='*.log' \
   -C "$(dirname "$NAVIDROME_DATA_PATH")" "$(basename "$NAVIDROME_DATA_PATH")" \
-  -C "$(dirname "$JELLYFIN_CONFIG_PATH")" "$(basename "$JELLYFIN_CONFIG_PATH")"
+  -C "$(dirname "$JELLYFIN_CONFIG_PATH")" "$(basename "$JELLYFIN_CONFIG_PATH")" \
+  -C "$(dirname "$PITUNE_DATA_PATH")" "$(basename "$PITUNE_DATA_PATH")"
 
 chmod 600 "$archive"
 
