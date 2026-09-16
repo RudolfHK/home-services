@@ -397,6 +397,14 @@ separate action (the "Analyze library" button in the Discover tab, wired
 but disabled until this is implemented) rather than a side effect of
 anything else in this stack.
 
+**A detailed research/design doc for genre, mood, BPM, key and similarity
+tagging exists at [`docs/DISCOVER-TAGGING.md`](docs/DISCOVER-TAGGING.md)**:
+which libraries actually have Raspberry Pi (ARM64) wheels (the pretrained
+models this section's own design assumes turn out not to), a tiered
+tagging plan (DSP-only BPM/key/energy first, a classical genre/mood
+classifier second, deep embeddings last), storage, API, and UX design,
+and a phased implementation roadmap. Read that before starting on this.
+
 ## Raspberry Pi considerations
 
 - **Boot drive vs. media drive.** Run the OS/Docker/configs off the NVMe SSD;
@@ -684,6 +692,8 @@ pihub/
 ├── docker-compose.yml
 ├── .env.example
 ├── pihub                    # CLI (see above)
+├── docs/
+│   └── DISCOVER-TAGGING.md  # research/plan for Discover's audio tagging (not yet implemented)
 ├── nginx/
 │   └── nginx.conf           # central reverse proxy
 ├── homepage/                 # unified dashboard + health monitor
