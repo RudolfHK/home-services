@@ -267,6 +267,7 @@
           // all (notably not in Chrome for Android), which is a real
           // problem for an app meant to be used from a phone; Pointer
           // Events cover mouse, touch and pen with one code path instead.
+          deviceDownloadAction(track),
           { icon: "⠿", title: "Drag to reorder", className: "item-drag-handle", onClick: () => {} },
           {
             icon: "✕", title: "Remove", className: "item-remove",
@@ -453,6 +454,121 @@
     if (audio.currentTime > 3 || queueIndex <= 0) { audio.currentTime = 0; return; }
     playIndex(queueIndex - 1);
   });
+
+  // ── Download to this device ─────────────────────────────────────────
+  // 📥 on every song row (Library, YouTube results, Queue) saves the audio
+  // onto whatever device PiTune is open on, a PC or a phone. Not to be
+  // confused with ⬇ "Save to library" on YouTube rows, which files a track
+  // into the Pi's own library instead; hence a different icon, not another
+  // arrow.
+  //
+  // Fetched here and handed to the browser as a blob, rather than a plain
+  // <a download> pointing straight at the server, for two reasons:
+  //  - Navidrome answers a refused download (ND_ENABLEDOWNLOADS=false) with
+  //    HTTP 200 and a JSON error body, which a plain link would save as the
+  //    "song". It's checked for here first instead.
+  //  - A YouTube track has to be fetched and tagged by pitune-backend first
+  //    (main.py's _prepare_device_download, a few seconds), and a plain link
+  //    shows nothing at all meanwhile. This way the button itself says
+  //    "Preparing…", then shows real progress, then ✓, or turns into a retry.
+  // Library songs come down as their original file (Navidrome's own
+  // download), YouTube tracks as a tagged M4A, which plays natively on every
+  // phone and desktop. On an iPhone (iOS 13+) Safari asks, then saves it to
+  // the Files app.
+  const UNSAFE_FILENAME_CHARS = /[\\/:*?"<>|\u0000-\u001f]+/g;
+
+  function deviceDownloadSource(track) {
+    const baseName = track.artist ? `${track.artist} - ${track.title}` : track.title;
+    if (track.source === "youtube") {
+      // The backend names it from YouTube's own metadata (Content-Disposition);
+      // this is only the fallback if that header doesn't make it through.
+      return { url: `api/download/${track.videoId}`, fallbackName: `${baseName}.m4a`, useServerName: true };
+    }
+    // Navidrome's own Content-Disposition uses the title alone; artist +
+    // title is what tells songs apart in a phone's Downloads list.
+    return { url: Subsonic.url("download", { id: track.id }), fallbackName: `${baseName}.${track.suffix || "mp3"}`, useServerName: false };
+  }
+
+  function filenameFromContentDisposition(header) {
+    if (!header) return null;
+    const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header); // RFC 5987, what non-ASCII names use
+    if (encoded) {
+      try { return decodeURIComponent(encoded[1]); } catch { /* malformed; try the plain form */ }
+    }
+    const plain = /filename="([^"]+)"/i.exec(header);
+    return plain ? plain[1] : null;
+  }
+
+  // Navidrome puts its errors in a Subsonic envelope, pitune-backend in
+  // FastAPI's {"detail": ...}; either is more useful than a status code.
+  async function readDownloadError(res) {
+    const text = await res.text();
+    try {
+      const body = JSON.parse(text);
+      const subsonicError = body["subsonic-response"] && body["subsonic-response"].error;
+      if (subsonicError) return subsonicError.message;
+      if (typeof body.detail === "string") return body.detail;
+    } catch { /* not JSON */ }
+    return text.slice(0, 200) || `HTTP ${res.status}`;
+  }
+
+  async function downloadToDevice(track, button) {
+    const { url, fallbackName, useServerName } = deviceDownloadSource(track);
+    const setLabel = (text, title) => { button.textContent = text; button.title = title; };
+    button.disabled = true;
+    setLabel("…", track.source === "youtube" ? "Preparing download (fetching it from YouTube)…" : "Starting download…");
+    try {
+      const res = await fetch(url);
+      const type = res.headers.get("Content-Type") || "";
+      if (!res.ok || type.includes("json")) throw new Error(await readDownloadError(res));
+
+      const total = Number(res.headers.get("Content-Length")) || 0;
+      let blob;
+      if (res.body && res.body.getReader) {
+        const reader = res.body.getReader();
+        const chunks = [];
+        let received = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.length;
+          if (total) setLabel(`${Math.floor((received / total) * 100)}%`, "Downloading…");
+        }
+        blob = new Blob(chunks, { type });
+      } else {
+        blob = await res.blob();
+      }
+
+      const name = ((useServerName && filenameFromContentDisposition(res.headers.get("Content-Disposition"))) || fallbackName)
+        .replace(UNSAFE_FILENAME_CHARS, "_");
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = name;
+      link.hidden = true;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // Not revoked straight away: Safari on iOS only reads the blob once its
+      // own "Download?" prompt has been confirmed.
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+      setLabel("✓", `Downloaded as ${name}`);
+      setTimeout(() => setLabel("📥", "Download to this device"), 4000);
+    } catch (err) {
+      // Left enabled: clicking it again IS the retry.
+      setLabel("⟳", `Download failed: ${err.message} (click to retry)`);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function deviceDownloadAction(track) {
+    return {
+      icon: "📥", title: "Download to this device", className: "item-device-download",
+      onClick: (btn) => downloadToDevice(track, btn),
+    };
+  }
 
   // ── Auto-save played YouTube tracks into the library ───────────────────
   // Fires once a YouTube-sourced track finishes playing NATURALLY (this
@@ -995,6 +1111,7 @@
       },
       { icon: "＋", title: "Add to queue", className: "item-queue", onClick: () => addToQueue(track) },
       { icon: "📋", title: "Add to playlist", className: "item-playlist-add", onClick: () => openPlaylistPicker(song) },
+      deviceDownloadAction(track),
     ];
   }
 
@@ -1102,6 +1219,7 @@
       // directly with getCoverArt; no separate album lookup needed.
       thumbUrl: s.coverArt ? Subsonic.coverArtUrl(s.coverArt) : null,
       origin: "library", // the tab goToNowPlaying returns to
+      suffix: s.suffix, // the original file's extension, for downloadToDevice's file name
     };
   }
 
@@ -1888,6 +2006,7 @@
     const actions = [
       { icon: "＋", title: "Add to queue", className: "item-queue", onClick: () => addToQueue(track) },
       { icon: "⬇", title: "Save to library", className: "item-save", onClick: (btn) => saveToLibraryManually(r.id, btn) },
+      deviceDownloadAction(track),
     ];
     if (r.channelId && showChannelButton) {
       actions.push({

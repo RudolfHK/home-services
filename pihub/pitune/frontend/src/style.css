@@ -236,7 +236,7 @@ main {
 .item-sub { color: var(--text-dim); font-size: 0.85em; }
 .item-duration { color: var(--text-dim); font-size: 0.85em; flex-shrink: 0; }
 .item-action { flex-shrink: 0; }
-.item-queue, .item-save, .item-star, .item-playlist-add, .item-channel { font-size: 1.1em; line-height: 1; }
+.item-queue, .item-save, .item-star, .item-playlist-add, .item-channel, .item-device-download { font-size: 1.1em; line-height: 1; }
 .item-star { color: var(--text-dim); }
 .item-star.starred { color: var(--accent); border-color: var(--accent); }
 /* Shared by the Queue list (see renderQueue) and the YouTube tab's search/
@@ -338,4 +338,14 @@ main {
   .topbar { gap: 0.75em; }
   .browser { flex-direction: column; }
   .library-sidebar { flex-direction: row; flex-wrap: wrap; width: auto; }
+  /* A row's action buttons (up to four: ★ ＋ 📋 📥 on a library song,
+     ＋ ⬇ 📥 📺 on a YouTube result) get their own line under the title
+     here, lined up with it, instead of squeezing the title column beside
+     them down to nothing (on a 390px-wide phone the title vanished
+     entirely). The ::after is a zero-height, full-width item ordered
+     between the two, which is what forces the wrap. */
+  .item-row:has(.item-action) { flex-wrap: wrap; row-gap: 0.35em; }
+  .item-row:has(.item-action)::after { content: ""; order: 1; flex-basis: 100%; }
+  .item-row .item-action, .item-row .save-progress { order: 2; }
+  .item-row .item-action:first-of-type { margin-left: calc(44px + 0.75em); }
 }

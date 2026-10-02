@@ -17,6 +17,13 @@ This still never redirects the browser to the raw googlevideo.com URL
 yt-dlp resolves; that URL is only valid for the IP that requested it
 (this container, not the browser), so redirecting would just 403.
 
+/api/download/{id} is the other way a YouTube track leaves PiTune: not into
+the Pi's library like /api/save below, but to whichever device asked (a PC
+or a phone browser), as a tagged M4A file. It's read-only from the Pi's
+point of view, same as /api/stream, and prepared in a per-request scratch
+directory that's deleted once the file has been sent; see
+_prepare_device_download.
+
 /api/save/{id} (saving a track into the library) is fire-and-forget: the
 POST starts the download as a background task and returns immediately,
 rather than blocking the request for the whole download+MP3-reencode. The
@@ -68,6 +75,8 @@ import logging
 import os
 import re
 import secrets
+import shutil
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -80,6 +89,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Path as PathParam, 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 logger = logging.getLogger("pitune.backend")
 logging.basicConfig(level=logging.INFO)
@@ -109,8 +119,11 @@ MUSIC_SAVE_PATH = Path(os.environ.get("MUSIC_SAVE_PATH", "/music/youtube"))
 # to protect /api/save even if it were narrowed instead of emptied.
 CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
 
-# Protects /api/save only — /api/search and /api/stream are read-only and
-# stay open (see ../../README.md's security model for that trade-off).
+# Protects /api/save only — /api/search, /api/stream and /api/download are
+# read-only (as far as the Pi's own library is concerned; download only
+# hands a file to the browser that asked) and stay open (see
+# ../../README.md's security model for that trade-off). Open is also what
+# lets a plain browser download carry on without a custom header at all.
 # Without this, a malicious webpage's background POST would trigger a real
 # download to disk with no user interaction, purely because
 # DOWNLOAD_ENABLED=true — CORS alone would not stop it: a plain POST with
@@ -591,6 +604,112 @@ async def stream(video_id: str = PathParam(..., min_length=11, max_length=11)):
     # actual seeking fix; a piped subprocess (the old approach) has no bytes
     # to seek within, only ones already flushed to the socket.
     return FileResponse(path, media_type=media_type)
+
+
+# ── Download to the listener's own device ───────────────────────────────
+# Not /api/save (which files a track into the Pi's own library): this hands
+# the audio to whichever browser asked, to keep on that PC or phone. M4A
+# (AAC), not the library's MP3: it plays natively on every phone and
+# desktop, and YouTube already serves most audio as AAC in M4A, which
+# FFmpegExtractAudio then only copies rather than re-encoding (no extra
+# quality loss, no Pi CPU time); only an Opus-only video gets transcoded.
+# Tagged the same way /api/save's MP3s are, so the file shows up in a
+# phone's music app as artist + title rather than as a bare file name.
+#
+# Each request gets its own scratch directory under _DEVICE_DOWNLOAD_DIR
+# (container-local, like _STREAM_CACHE_DIR), deleted once the response has
+# been sent, so nothing piles up; and no two requests for the same video
+# can trip over each other's files. A client that disconnects mid-transfer
+# can skip that cleanup, so every new download first sweeps away anything
+# older than _DEVICE_DOWNLOAD_MAX_AGE.
+_DEVICE_DOWNLOAD_DIR = Path("/tmp/pitune-device-downloads")
+_DEVICE_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+_DEVICE_DOWNLOAD_MAX_AGE = 3600
+
+# Characters no common filesystem (Windows, Android's FAT-formatted
+# storage) accepts in a file name; browsers sanitize too, but not all alike.
+_UNSAFE_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+
+
+class _NotDownloadable(Exception):
+    """A video that exists but can't be turned into a file (live, upcoming)."""
+
+
+def _device_filename(info: dict) -> str:
+    # YouTube Music's credited artist/track where it has them, else the
+    # channel and video title, the same choice FFmpegMetadata makes for
+    # the tags inside the file.
+    artist = info.get("artist") or info.get("uploader") or info.get("channel")
+    title = info.get("track") or info.get("title") or info.get("id")
+    name = f"{artist} - {title}" if artist else str(title)
+    return _UNSAFE_FILENAME_CHARS.sub("_", name).strip(" .")[:150] + ".m4a"
+
+
+def _sweep_stale_device_downloads() -> None:
+    cutoff = time.time() - _DEVICE_DOWNLOAD_MAX_AGE
+    for workdir in _DEVICE_DOWNLOAD_DIR.iterdir():
+        try:
+            if workdir.stat().st_mtime < cutoff:
+                shutil.rmtree(workdir, ignore_errors=True)
+        except OSError:
+            pass  # already gone: another request's sweep or cleanup got there first
+
+
+def _prepare_device_download(video_id: str) -> tuple[Path, Path, str]:
+    """Blocking (network I/O + ffmpeg); always call via asyncio.to_thread.
+    video_id is already validated by the caller. Returns the finished file,
+    the scratch directory to delete once it's been sent, and the file name
+    the browser should save it under."""
+    _sweep_stale_device_downloads()
+    workdir = Path(tempfile.mkdtemp(prefix=f"{video_id}-", dir=_DEVICE_DOWNLOAD_DIR))
+    try:
+        opts = {
+            **_BASE_OPTS,
+            "format": "bestaudio[ext=m4a]/bestaudio/best",
+            "outtmpl": str(workdir / "audio.%(ext)s"),
+            "postprocessors": [
+                {"key": "FFmpegExtractAudio", "preferredcodec": "m4a"},
+                {"key": "FFmpegMetadata", "add_metadata": True, "add_chapters": False},
+            ],
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            # Resolved first and downloaded second, so a live stream is
+            # refused before anything starts: its download would never
+            # finish (see _is_playable), holding this request open while
+            # filling the container's disk.
+            info = ydl.extract_info(_video_url(video_id), download=False)
+            if info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming"):
+                raise _NotDownloadable("Live streams and upcoming premieres can't be downloaded")
+            info = ydl.process_ie_result(info, download=True)
+        final = (info.get("requested_downloads") or [{}])[-1].get("filepath")
+        path = Path(final) if final else None
+        if path is None or not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError(f"yt-dlp reported success, but produced no file ({path})")
+        return path, workdir, _device_filename(info)
+    except BaseException:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise
+
+
+@app.get("/api/download/{video_id}")
+async def download_to_device(video_id: str = PathParam(..., min_length=11, max_length=11)):
+    video_id = _validate_video_id(video_id)
+    try:
+        path, workdir, filename = await asyncio.to_thread(_prepare_device_download, video_id)
+    except _NotDownloadable as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except yt_dlp.utils.YoutubeDLError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not prepare the download: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Preparing %s for download failed", video_id)
+        raise HTTPException(status_code=500, detail=f"Could not prepare the download: {type(exc).__name__}: {exc}")
+    # `filename` makes FileResponse send "Content-Disposition: attachment"
+    # (with an RFC 5987 filename* for non-ASCII titles); the background
+    # task runs only after the whole body has been sent.
+    return FileResponse(
+        path, media_type="audio/mp4", filename=filename,
+        background=BackgroundTask(shutil.rmtree, workdir, ignore_errors=True),
+    )
 
 
 async def _download_to_library(video_id: str) -> None:

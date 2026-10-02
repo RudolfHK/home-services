@@ -71,6 +71,16 @@ from `.env`'s `COMPOSE_PROFILES` without affecting the others. See
   runs automatically once a YouTube track finishes playing.** On by default
   (`DOWNLOAD_ENABLED=true`). Scoped to that one subfolder, never the rest of
   `music/`. See `pitune/backend/app/main.py`.
+- **📥 on every song row downloads it to the device PiTune is open on** (a
+  PC or a phone), as opposed to ⬇, which saves a YouTube track onto the
+  Pi. Library songs come straight from Navidrome as the original file
+  (turn that off with Navidrome's own `ND_ENABLEDOWNLOADS=false`, which
+  PiTune shows as a refusal rather than saving the error as a file); a
+  YouTube track is prepared by `/api/download/{id}` as a tagged M4A (AAC,
+  which plays natively on every phone and desktop), in a scratch directory
+  inside the container that's deleted once the file is sent. Like
+  `/api/stream`, it's read-only as far as the Pi's library is concerned, so
+  it isn't behind `API_TOKEN`. See `app.js`'s "Download to this device".
 - **Jellyfin's healthcheck can't be a `/health` path check.** Setting Base
   URL (required; see Quick start) moves ALL of Jellyfin's routes under that
   prefix, `/health` included. A check hardcoded to `/health` would pass
