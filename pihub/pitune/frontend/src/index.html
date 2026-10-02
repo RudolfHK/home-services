@@ -66,18 +66,18 @@
             <input id="library-search-input" type="search" placeholder="Search your library…" autocomplete="off">
             <button type="submit">Search</button>
           </form>
-          <!-- Applied client-side (see app.js's applyLibraryFilters) to
-               Songs, Favorites, Recently Added, Playlist detail and Search
-               results, every section with full song metadata already in
-               hand. Not applied to Most Played, which is ranked by PiTune's
-               own play counter instead (see showMostPlayed). -->
-          <div class="yt-filters">
+          <!-- Applied to Songs, Favorites, Recently Added, Playlist detail
+               and Search results (see app.js's applyLibraryFilters), and to
+               Albums minus Duration (applyLibraryAlbumFilters). Hidden in
+               views it doesn't apply to, Most Played included, which is a
+               ranking (see startLibraryView and showMostPlayed). -->
+          <div class="yt-filters" id="library-filters">
             <label>Artist
               <select id="library-filter-artist">
                 <option value="">All artists</option>
               </select>
             </label>
-            <label>Duration
+            <label id="library-filter-duration-label">Duration
               <select id="library-filter-duration">
                 <option value="any">Any</option>
                 <option value="short">Under 4 min</option>
@@ -105,9 +105,10 @@
         <input id="yt-search-input" type="search" placeholder="Search YouTube…" autocomplete="off">
         <button type="submit">Search</button>
       </form>
-      <!-- Filtering/sorting happens server-side (see main.py's _filter_and_sort);
-           changing any of these re-runs the current search or channel view
-           from its first batch. -->
+      <!-- Filtering/sorting happens server-side: YouTube's own search filters
+           for a search (see main.py's _search_sp), the backend's for a
+           channel's uploads (_matches_filters). Changing any of these re-runs
+           the current search or channel view from its first batch. -->
       <div class="yt-filters">
         <label>Sort by
           <select id="yt-filter-sort">

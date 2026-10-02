@@ -126,7 +126,10 @@
     getAlbum(id) { return this.call("getAlbum", { id }); },
     getSong(id) { return this.call("getSong", { id }); },
     getRandomSongs(size) { return this.call("getRandomSongs", { size }); },
-    getAlbumList2(type, size, offset) { return this.call("getAlbumList2", { type, size, offset: offset || 0 }); },
+    // extra: type-specific params, e.g. {fromYear, toYear} for type "byYear".
+    getAlbumList2(type, size, offset, extra) {
+      return this.call("getAlbumList2", { type, size, offset: offset || 0, ...(extra || {}) });
+    },
     getStarred2() { return this.call("getStarred2"); },
     // submission=true is a real play (increments Navidrome's own playCount,
     // which is where "Most Played" and every song's play count come from;
@@ -169,6 +172,21 @@
     if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
     if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
     return String(n);
+  }
+
+  // "3 weeks ago", the way YouTube's own results label uploads, from
+  // main.py's uploadedAt (epoch seconds). That value is itself derived
+  // from YouTube's own relative label (see main.py's _FLAT_OPTS), so it's
+  // never meaningfully more precise than this.
+  const AGE_UNITS = [["year", 365 * 86400], ["month", 30 * 86400], ["week", 7 * 86400], ["day", 86400], ["hour", 3600], ["minute", 60]];
+  function formatAge(epochSec) {
+    const age = Date.now() / 1000 - epochSec;
+    if (!isFinite(age)) return "";
+    for (const [unit, secs] of AGE_UNITS) {
+      const n = Math.floor(age / secs);
+      if (n >= 1) return `${n} ${unit}${n === 1 ? "" : "s"} ago`;
+    }
+    return "just now";
   }
 
   // Builds one list row from DOM nodes (never innerHTML) so nothing coming
@@ -331,6 +349,14 @@
     }
   }
 
+  // "youtube:<videoId>" / "local:<songId>": what ytResultRows and
+  // libraryResultRows are keyed by, so either list can hold either kind of
+  // row (Most Played, in the Library tab, shows YouTube tracks too).
+  function trackKey(track) {
+    if (!track) return null;
+    return track.source === "youtube" ? `youtube:${track.videoId}` : `local:${track.id}`;
+  }
+
   // Mirrors the currently-playing track onto whichever list rows can show
   // it: the Queue (rebuilt on every change anyway, handled in renderQueue
   // itself via the "playing" class) and the YouTube tab's search/channel
@@ -338,14 +364,9 @@
   // list), so their highlight has to be pushed in from here instead of
   // baked in at render time.
   function updateNowPlayingHighlights() {
-    const current = queue[queueIndex];
-    const playingVideoId = current && current.source === "youtube" ? current.videoId : null;
-    const playingSongId = current && current.source === "local" ? current.id : null;
-    ytResultRows.forEach((row, videoId) => {
-      row.classList.toggle("playing", videoId === playingVideoId);
-    });
-    libraryResultRows.forEach((row, songId) => {
-      row.classList.toggle("playing", songId === playingSongId);
+    const playingKey = trackKey(queue[queueIndex]);
+    [ytResultRows, libraryResultRows].forEach((rows) => {
+      rows.forEach((row, key) => row.classList.toggle("playing", key === playingKey));
     });
   }
 
@@ -424,7 +445,11 @@
   });
   document.getElementById("btn-next").addEventListener("click", () => playIndex(queueIndex + 1));
   document.getElementById("btn-prev").addEventListener("click", () => {
-    if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+    // Nothing queued before the current track (which is the usual case,
+    // since playIndex removes each track once it's been played through):
+    // restart it instead. playIndex(-1) would remove the current track
+    // from the queue too, and then stop playback with nothing left loaded.
+    if (audio.currentTime > 3 || queueIndex <= 0) { audio.currentTime = 0; return; }
     playIndex(queueIndex - 1);
   });
 
@@ -579,34 +604,47 @@
   });
   const volumeSlider = document.getElementById("np-volume");
   const muteBtn = document.getElementById("np-mute");
-  // Remembered across a mute/unmute cycle so clicking the speaker icon
-  // restores whatever level was actually in use, not a hardcoded default;
-  // only updated when NOT muted, so muting itself never overwrites it.
-  let volumeBeforeMute = 0.8;
+  // Muting sets audio.muted rather than volume = 0: iOS Safari ignores
+  // writes to HTMLMediaElement.volume entirely (volume there is the
+  // hardware buttons' job), so a volume-based mute silently did nothing on
+  // an iPhone, while `muted` is honored everywhere. It also leaves the
+  // volume itself untouched, so unmuting restores it without having to
+  // remember it. The one exception is a slider dragged all the way to 0:
+  // unmuting from there has nothing to restore, so it falls back to the
+  // last audible level instead.
+  let lastAudibleVolume = 0.8;
 
-  function updateMuteIcon() {
-    if (audio.volume === 0) { muteBtn.textContent = "🔇"; muteBtn.title = "Unmute"; }
-    else if (audio.volume < 0.5) { muteBtn.textContent = "🔉"; muteBtn.title = "Mute"; }
-    else { muteBtn.textContent = "🔊"; muteBtn.title = "Mute"; }
+  // slider: false while the slider itself is being dragged, so it stays
+  // under the user's finger (on iOS, where the volume write is ignored,
+  // syncing it would snap it straight back to 100 mid-drag).
+  function syncVolumeUi({ slider = true } = {}) {
+    const silent = audio.muted || audio.volume === 0;
+    muteBtn.textContent = silent ? "🔇" : audio.volume < 0.5 ? "🔉" : "🔊";
+    muteBtn.title = silent ? "Unmute" : "Mute";
+    if (slider) volumeSlider.value = silent ? 0 : Math.round(audio.volume * 100);
   }
 
   volumeSlider.addEventListener("input", (e) => {
-    audio.volume = e.target.value / 100;
-    if (audio.volume > 0) volumeBeforeMute = audio.volume;
-    updateMuteIcon();
+    const volume = e.target.value / 100;
+    audio.volume = volume;
+    audio.muted = volume === 0; // dragging back up from 0 unmutes too
+    if (volume > 0) lastAudibleVolume = volume;
+    syncVolumeUi({ slider: false });
   });
   muteBtn.addEventListener("click", () => {
-    if (audio.volume > 0) {
-      volumeBeforeMute = audio.volume; // in case the slider was never touched this session
-      audio.volume = 0;
+    if (audio.muted || audio.volume === 0) {
+      if (audio.volume === 0) audio.volume = lastAudibleVolume;
+      audio.muted = false;
     } else {
-      audio.volume = volumeBeforeMute || 0.8;
+      audio.muted = true;
     }
-    volumeSlider.value = audio.volume * 100;
-    updateMuteIcon();
+    syncVolumeUi();
   });
+  // Also covers changes made outside this UI (e.g. the OS/browser's own
+  // media controls); fires asynchronously, hence the direct calls above too.
+  audio.addEventListener("volumechange", () => syncVolumeUi({ slider: document.activeElement !== volumeSlider }));
   audio.volume = 0.8;
-  updateMuteIcon();
+  syncVolumeUi();
 
   // ── Tabs ────────────────────────────────────────────────────────────
   document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -698,11 +736,49 @@
       const btn = document.createElement("button");
       btn.textContent = crumb.label;
       btn.addEventListener("click", () => {
-        libraryStack = libraryStack.slice(0, i + 1);
+        // Up to but NOT including this crumb: a drill-down's render()
+        // pushes its own crumb back on (a top-level section's resets the
+        // whole stack), so keeping it here too would show it twice.
+        libraryStack = libraryStack.slice(0, i);
         crumb.render();
       });
       el.appendChild(btn);
     });
+  }
+
+  // Bumped by every library view as it starts (sections, drill-downs,
+  // search, all through startLibraryView below). An async load compares
+  // the value it started with before touching #library-list, so a slow
+  // response for a view the user has already left (another section, or the
+  // same one re-run by a filter change) can't overwrite or append into
+  // whatever replaced it.
+  let libraryViewSeq = 0;
+
+  // filterMode: which of the filter bar's controls apply to this view.
+  // "songs": all of them. "albums": artist + year (duration is per-song).
+  // "none": hidden, for views that list neither (Artists, Playlists), and
+  // for the ones that deliberately show a complete, unfiltered set (an
+  // album's or artist's full contents, Most Played's ranking).
+  function startLibraryView(filterMode) {
+    libraryViewSeq++;
+    renderBreadcrumbs();
+    // Only the Songs section shows this, and it un-hides it itself; any
+    // other view (Playlists writes #library-list directly) would otherwise
+    // inherit a still-visible one from Songs.
+    document.getElementById("library-load-more").classList.add("hidden");
+    document.getElementById("library-filters").classList.toggle("hidden", filterMode === "none");
+    document.getElementById("library-filter-duration-label").classList.toggle("hidden", filterMode === "albums");
+    return libraryViewSeq;
+  }
+
+  // Re-runs whatever the breadcrumbs currently end on (a section, a
+  // drill-down like a playlist's contents, or a search), e.g. after a
+  // filter change; see renderBreadcrumbs for why its crumb is popped first.
+  function rerenderCurrentLibraryView() {
+    const current = libraryStack[libraryStack.length - 1];
+    if (!current) return;
+    libraryStack = libraryStack.slice(0, -1);
+    current.render();
   }
 
   // Callers build `rows` via .map(songRow) (or buildRow directly, for
@@ -896,7 +972,7 @@
     playIndex(0);
   }
 
-  // songId -> <li>, mirroring ytResultRows in the YouTube tab section below:
+  // trackKey -> <li>, mirroring ytResultRows in the YouTube tab section below:
   // only ever holds whatever's CURRENTLY rendered in #library-list, so
   // updateNowPlayingHighlights (see the player section above) never touches
   // a stale/removed row. Cleared wherever the list is actually wiped
@@ -917,7 +993,7 @@
       onClick: () => enqueue(track),
       actions: songRowActions(s, track),
     });
-    libraryResultRows.set(s.id, row);
+    libraryResultRows.set(trackKey(track), row);
     return row;
   }
 
@@ -926,21 +1002,28 @@
   }
 
   // ── Library filters (artist / duration / year) ─────────────────────────
-  // Applied client-side to every section that already has full song
-  // metadata in hand (Songs, Favorites, Recently Added, Playlist detail,
-  // Search), Subsonic has no server-side equivalent of this combination,
-  // but every field involved (artist, duration, year) already comes back on
-  // every Child (song) element for free, so filtering after the fact costs
-  // nothing extra network-wise. Deliberately NOT applied to Most Played,
-  // which is ranked by PiTune's own play counter rather than by browsing a
-  // full song list (see showMostPlayed).
+  // Applied client-side to every view that already has full song metadata
+  // in hand (Songs, Favorites, Recently Added, Playlist detail, Search):
+  // Subsonic has no server-side equivalent of this combination, but every
+  // field involved (artist, duration, year) already comes back on every
+  // Child (song) element for free, so filtering after the fact costs
+  // nothing extra network-wise. Albums gets artist + year (see
+  // applyLibraryAlbumFilters). Where a filter CAN narrow what gets fetched
+  // in the first place, Songs and Albums do that rather than paging
+  // through the whole library for the few matches (songsForArtist,
+  // albumListQueryForFilters). Deliberately NOT applied to Most Played,
+  // which is a ranking (see showMostPlayed); startLibraryView hides the
+  // bar wherever it doesn't apply.
   const DURATION_BUCKETS = { short: [0, 240], medium: [240, 1200], long: [1200, Infinity] };
 
   function currentLibraryFilters() {
+    const artistSelect = document.getElementById("library-filter-artist");
     const yearFrom = document.getElementById("library-filter-year-from").value;
     const yearTo = document.getElementById("library-filter-year-to").value;
     return {
-      artist: document.getElementById("library-filter-artist").value,
+      // {id, name}: the id matches Navidrome's own artist links exactly;
+      // the name is the fallback for fields that carry only a string.
+      artist: artistSelect.value ? { id: artistSelect.value, name: artistSelect.selectedOptions[0].textContent } : null,
       duration: document.getElementById("library-filter-duration").value,
       yearFrom: yearFrom ? Number(yearFrom) : null,
       yearTo: yearTo ? Number(yearTo) : null,
@@ -952,108 +1035,225 @@
     return !!f.artist || f.duration !== "any" || f.yearFrom != null || f.yearTo != null;
   }
 
+  // The artist dropdown lists ALBUM artists (getArtists), but a song's own
+  // `artist` string is its track artist, often "Alpha feat. Beta", or
+  // someone else entirely on a compilation. Comparing only that string
+  // missed every featured appearance and every track on a Various Artists
+  // album. OpenSubsonic servers (Navidrome included) also list each song's
+  // individual artists and album artists by id, which catches both; the
+  // plain-string comparisons cover servers that don't.
+  function songMatchesArtist(s, artist) {
+    const ids = [s.artistId, ...(s.artists || []).map((a) => a.id), ...(s.albumArtists || []).map((a) => a.id)];
+    return ids.includes(artist.id) || s.artist === artist.name || s.displayAlbumArtist === artist.name;
+  }
+
+  function albumMatchesArtist(al, artist) {
+    const ids = [al.artistId, ...(al.artists || []).map((a) => a.id)];
+    return ids.includes(artist.id) || al.artist === artist.name;
+  }
+
+  function yearInRange(year, yearFrom, yearTo) {
+    if (yearFrom != null && (!year || year < yearFrom)) return false;
+    if (yearTo != null && (!year || year > yearTo)) return false;
+    return true;
+  }
+
   function applyLibraryFilters(songs) {
+    if (!libraryFiltersActive()) return songs;
     const { artist, duration, yearFrom, yearTo } = currentLibraryFilters();
-    if (!artist && duration === "any" && yearFrom == null && yearTo == null) return songs;
     return songs.filter((s) => {
-      if (artist && s.artist !== artist) return false;
+      if (artist && !songMatchesArtist(s, artist)) return false;
       if (duration !== "any") {
         const [lo, hi] = DURATION_BUCKETS[duration];
         if (s.duration == null || s.duration < lo || s.duration >= hi) return false;
       }
-      if (yearFrom != null && (!s.year || s.year < yearFrom)) return false;
-      if (yearTo != null && (!s.year || s.year > yearTo)) return false;
-      return true;
+      return yearInRange(s.year, yearFrom, yearTo);
     });
   }
 
-  // Populated once after login (see initLibrary); getArtists() is already
-  // the whole-library artist index, so no extra request is needed beyond
-  // the one Artists already makes for its own sidebar section.
+  // Duration buckets describe single songs, so they don't apply to whole
+  // albums; startLibraryView("albums") hides that control accordingly.
+  function applyLibraryAlbumFilters(albums) {
+    const { artist, yearFrom, yearTo } = currentLibraryFilters();
+    return albums.filter((al) => (!artist || albumMatchesArtist(al, artist)) && yearInRange(al.year, yearFrom, yearTo));
+  }
+
+  // getAlbumList2 arguments that let Navidrome itself narrow albums to the
+  // year filter's range ("byYear" requires both ends, hence the open-ended
+  // defaults), instead of paging alphabetically through all of them.
+  function albumListQueryForFilters({ yearFrom, yearTo }) {
+    if (yearFrom == null && yearTo == null) return { type: "alphabeticalByName", extra: {} };
+    return { type: "byYear", extra: { fromYear: yearFrom != null ? yearFrom : 1, toYear: yearTo != null ? yearTo : 9999 } };
+  }
+
+  // Populated after login (see initLibrary); getArtists() is already the
+  // whole-library artist index. Rebuilt rather than appended to, since
+  // initLibrary runs again on every Retry and re-login.
   async function populateLibraryFilterArtists() {
     const select = document.getElementById("library-filter-artist");
     try {
       const data = await Subsonic.getArtists();
       const index = (data.artists && data.artists.index) || [];
-      const artists = index.flatMap((idx) => idx.artist || []).map((a) => a.name).sort();
-      artists.forEach((name) => {
+      const byId = new Map(index.flatMap((idx) => idx.artist || []).map((a) => [a.id, a]));
+      const selected = select.value;
+      while (select.options.length > 1) select.remove(1); // keep "All artists"
+      [...byId.values()].sort((a, b) => a.name.localeCompare(b.name)).forEach((a) => {
         const opt = document.createElement("option");
-        opt.value = name;
-        opt.textContent = name;
+        opt.value = a.id;
+        opt.textContent = a.name;
         select.appendChild(opt);
       });
+      select.value = byId.has(selected) ? selected : "";
     } catch (err) {
       console.warn("Could not load artists for the library filter bar:", err);
     }
   }
 
-  // Changing a filter re-runs whichever section (or search) is currently
-  // active from scratch, the same "start over, don't try to patch what's
-  // already rendered" approach the YouTube tab's own filters use.
+  // Changing a filter re-runs whatever is currently shown from scratch,
+  // the same "start over, don't try to patch what's already rendered"
+  // approach the YouTube tab's own filters use. The current VIEW, not the
+  // sidebar's active section: inside a playlist, re-running "Playlists"
+  // threw away the playlist being filtered and went back to the list.
   ["library-filter-artist", "library-filter-duration", "library-filter-year-from", "library-filter-year-to"].forEach((id) => {
-    document.getElementById(id).addEventListener("change", () => {
-      const query = document.getElementById("library-search-input").value.trim();
-      if (query) { document.getElementById("library-search-form").requestSubmit(); return; }
-      const activeBtn = document.querySelector(".library-nav-btn.active");
-      if (activeBtn) librarySections[activeBtn.dataset.section]();
-    });
+    document.getElementById(id).addEventListener("change", () => rerenderCurrentLibraryView());
   });
 
   // Subsonic has no endpoint for "list every song, paginated"; only
   // albums support offset-based paging (getAlbumList2). This section
-  // fakes the song-level version of that by paging through ALBUMS
-  // alphabetically and flattening each page's songs, a handful of albums
-  // at a time rather than fetching genuinely all of them up front (which
-  // would mean one enormous request and a long wait before anything shows
-  // up on a big library). "Load more" fetches the next batch; there's no
-  // total or page count to show since Subsonic doesn't expose a song
-  // count either, only whichever real library data has actually loaded.
+  // fakes the song-level version of that by paging through ALBUMS and
+  // flattening each page's songs, a handful of albums at a time rather
+  // than fetching genuinely all of them up front (which would mean one
+  // enormous request and a long wait before anything shows up on a big
+  // library). There's no total or page count to show since Subsonic
+  // doesn't expose a song count either, only whichever real library data
+  // has actually loaded.
+  //
+  // Filtering each five-album batch after the fact meant that, on a real
+  // library, most batches added nothing and the list sat empty until "Load
+  // more" had been pressed enough times to stumble onto a match. So: an
+  // artist filter fetches that artist's songs directly (songsForArtist, no
+  // paging at all); a year filter pages only albums from those years
+  // (albumListQueryForFilters); and one load keeps fetching batches until
+  // it has SONGS_SECTION_MIN_NEW_ROWS new matches, the albums run out, or
+  // SONGS_SECTION_MAX_BATCHES batches have gone by, so an unusually narrow
+  // duration filter still hands control back rather than silently walking
+  // the whole library in one go.
   const SONGS_SECTION_ALBUM_BATCH = 5;
-  let songsSectionAlbumOffset = 0;
+  const SONGS_SECTION_MIN_NEW_ROWS = 20;
+  const SONGS_SECTION_MAX_BATCHES = 10;
+  let songsSectionPaging = null; // {seq, type, extra, offset, shown, hint}
 
   async function loadMoreSongs() {
+    const paging = songsSectionPaging;
+    if (!paging || paging.seq !== libraryViewSeq) return;
     const btn = document.getElementById("library-load-more");
+    const list = document.getElementById("library-list");
     btn.disabled = true;
     btn.textContent = "Loading…";
+    let added = 0;
+    let exhausted = false;
     try {
-      const data = await Subsonic.getAlbumList2("alphabeticalByName", SONGS_SECTION_ALBUM_BATCH, songsSectionAlbumOffset);
-      const albums = (data.albumList2 && data.albumList2.album) || [];
-      songsSectionAlbumOffset += albums.length;
-      if (!albums.length) {
-        btn.textContent = "No more songs";
-        return; // stays disabled: this was the last page
+      for (let batch = 0; batch < SONGS_SECTION_MAX_BATCHES && added < SONGS_SECTION_MIN_NEW_ROWS && !exhausted; batch++) {
+        const data = await Subsonic.getAlbumList2(paging.type, SONGS_SECTION_ALBUM_BATCH, paging.offset, paging.extra);
+        if (paging.seq !== libraryViewSeq) return; // the user has moved on; see libraryViewSeq
+        const albums = (data.albumList2 && data.albumList2.album) || [];
+        paging.offset += albums.length;
+        exhausted = albums.length < SONGS_SECTION_ALBUM_BATCH;
+        // allSettled, not all: one bad album (removed mid-scan, say)
+        // must not abort every other album's songs along with it.
+        const albumDetails = (await Promise.allSettled(albums.map((al) => Subsonic.getAlbum(al.id))))
+          .filter((r) => r.status === "fulfilled").map((r) => r.value);
+        if (paging.seq !== libraryViewSeq) return;
+        albumDetails.forEach((detail) => {
+          applyLibraryFilters((detail.album && detail.album.song) || []).forEach((s) => {
+            list.appendChild(songRow(s));
+            added++;
+          });
+        });
       }
-      // allSettled, not all: one bad album (removed mid-scan, say)
-      // must not abort every other album's songs along with it.
-      const albumDetails = (await Promise.allSettled(albums.map((al) => Subsonic.getAlbum(al.id))))
-        .filter((r) => r.status === "fulfilled").map((r) => r.value);
-      const list = document.getElementById("library-list");
-      albumDetails.forEach((detail) => {
-        const songs = applyLibraryFilters((detail.album && detail.album.song) || []);
-        songs.forEach((s) => list.appendChild(songRow(s)));
-      });
+      paging.shown += added;
       updateNowPlayingHighlights(); // in case whatever's already playing is in this batch
-      btn.textContent = "Load more";
-      btn.disabled = false;
+      if (!paging.shown && exhausted) {
+        renderLibraryError(libraryFiltersActive() ? "No songs match these filters." : "No songs in the library yet.");
+        return;
+      }
+      if (!paging.shown) {
+        paging.hint.textContent = `No matches in the first ${paging.offset} albums yet. Load more to keep looking.`;
+      }
+      if (exhausted) {
+        btn.textContent = "No more songs"; // stays disabled: this was the last page
+      } else {
+        btn.textContent = "Load more";
+        btn.disabled = false;
+      }
     } catch (err) {
+      if (paging.seq !== libraryViewSeq) return;
       btn.textContent = "Load more (failed, tap to retry)";
       btn.disabled = false;
     }
   }
 
+  // An artist filter's songs, fetched directly: the artist's own albums
+  // (getArtist), plus a search on their name to pick up featured
+  // appearances on other artists' albums and compilations, which getArtist
+  // doesn't list. applyLibraryFilters then keeps exactly what
+  // songMatchesArtist accepts, along with the other filters.
+  async function songsForArtist(artist) {
+    const [artistData, searchData] = await Promise.all([
+      Subsonic.getArtist(artist.id),
+      // Extra coverage only: its failing isn't worth failing the rest over.
+      Subsonic.search3(artist.name, { songCount: 500 }).catch(() => null),
+    ]);
+    const albums = (artistData.artist && artistData.artist.album) || [];
+    const albumDetails = (await Promise.allSettled(albums.map((al) => Subsonic.getAlbum(al.id))))
+      .filter((r) => r.status === "fulfilled").map((r) => r.value);
+    const songs = new Map();
+    albumDetails.forEach((detail) => ((detail.album && detail.album.song) || []).forEach((s) => songs.set(s.id, s)));
+    ((searchData && searchData.searchResult3 && searchData.searchResult3.song) || [])
+      .forEach((s) => { if (!songs.has(s.id)) songs.set(s.id, s); });
+    return applyLibraryFilters([...songs.values()]);
+  }
+
   async function showSongsSection() {
     selectLibrarySection("songs");
     libraryStack = [{ label: "Songs", render: showSongsSection }];
-    renderBreadcrumbs();
-    songsSectionAlbumOffset = 0;
+    const seq = startLibraryView("songs");
+    songsSectionPaging = null;
     libraryResultRows = new Map();
     const list = document.getElementById("library-list");
     list.innerHTML = "";
+    const btn = document.getElementById("library-load-more");
+    btn.classList.add("hidden");
+    const filters = currentLibraryFilters();
+
+    if (filters.artist) {
+      const loading = document.createElement("li");
+      loading.className = "item-sub";
+      loading.textContent = "Loading…";
+      list.appendChild(loading);
+      try {
+        const songs = await songsForArtist(filters.artist);
+        if (seq !== libraryViewSeq) return;
+        if (!songs.length) {
+          renderLibraryError(`No songs by ${filters.artist.name} match these filters.`);
+          return;
+        }
+        renderLibraryList(songs.map(songRow));
+      } catch (err) {
+        if (seq !== libraryViewSeq) return;
+        renderLibraryError("Could not load songs: " + err.message);
+      }
+      return;
+    }
+
+    const { type, extra } = albumListQueryForFilters(filters);
     const hint = document.createElement("li");
     hint.className = "library-section-hint";
-    hint.textContent = "Loaded album by album, alphabetically. Subsonic has no flat \"every song\" call to page through directly; Load more for further albums.";
+    hint.textContent = type === "byYear"
+      ? "Albums from the selected years, a few at a time; Load more for further albums."
+      : "Loaded album by album, alphabetically. Subsonic has no flat \"every song\" call to page through directly; Load more for further albums.";
     list.appendChild(hint);
-    const btn = document.getElementById("library-load-more");
+    songsSectionPaging = { seq, type, extra, offset: 0, shown: 0, hint };
     btn.classList.remove("hidden");
     btn.onclick = loadMoreSongs; // assignment, not addEventListener: revisiting this section must not stack a second handler
     await loadMoreSongs();
@@ -1062,10 +1262,27 @@
   async function showAlbumsSection() {
     selectLibrarySection("albums");
     libraryStack = [{ label: "Albums", render: showAlbumsSection }];
-    renderBreadcrumbs();
+    const seq = startLibraryView("albums");
+    const filters = currentLibraryFilters();
     try {
-      const data = await Subsonic.getAlbumList2("alphabeticalByName", 500);
-      const albums = (data.albumList2 && data.albumList2.album) || [];
+      // Fetch only what the filters allow where Navidrome can narrow it
+      // itself: one artist's albums, or one year range; either way,
+      // applyLibraryAlbumFilters still applies whichever wasn't used to fetch.
+      let fetched;
+      if (filters.artist) {
+        const data = await Subsonic.getArtist(filters.artist.id);
+        fetched = (data.artist && data.artist.album) || [];
+      } else {
+        const { type, extra } = albumListQueryForFilters(filters);
+        const data = await Subsonic.getAlbumList2(type, 500, 0, extra);
+        fetched = (data.albumList2 && data.albumList2.album) || [];
+      }
+      if (seq !== libraryViewSeq) return;
+      const albums = applyLibraryAlbumFilters(fetched);
+      if (!albums.length) {
+        renderLibraryError(libraryFiltersActive() ? "No albums match these filters." : "No albums in the library yet.");
+        return;
+      }
       renderLibraryList(albums.map((al) => buildRow({
         thumbUrl: al.coverArt ? Subsonic.coverArtUrl(al.coverArt) : null,
         icon: "💿",
@@ -1074,6 +1291,7 @@
         onClick: () => showAlbumSongs(al.id, al.name),
       })));
     } catch (err) {
+      if (seq !== libraryViewSeq) return;
       renderLibraryError("Could not load albums: " + err.message);
     }
   }
@@ -1081,9 +1299,10 @@
   async function showArtists() {
     selectLibrarySection("artists");
     libraryStack = [{ label: "Artists", render: showArtists }];
-    renderBreadcrumbs();
+    const seq = startLibraryView("none");
     try {
       const data = await Subsonic.getArtists();
+      if (seq !== libraryViewSeq) return;
       const index = (data.artists && data.artists.index) || [];
       const artists = index.flatMap((idx) => idx.artist || []);
       renderLibraryList(artists.map((a) => buildRow({
@@ -1094,15 +1313,17 @@
         onClick: () => showArtistAlbums(a.id, a.name),
       })));
     } catch (err) {
+      if (seq !== libraryViewSeq) return;
       renderLibraryError("Could not load artists: " + err.message);
     }
   }
 
   async function showArtistAlbums(artistId, artistName) {
     libraryStack.push({ label: artistName, render: () => showArtistAlbums(artistId, artistName) });
-    renderBreadcrumbs();
+    const seq = startLibraryView("none"); // all of this artist's albums, unfiltered
     try {
       const data = await Subsonic.getArtist(artistId);
+      if (seq !== libraryViewSeq) return;
       const albums = (data.artist && data.artist.album) || [];
       renderLibraryList(albums.map((al) => buildRow({
         thumbUrl: al.coverArt ? Subsonic.coverArtUrl(al.coverArt) : null,
@@ -1112,19 +1333,22 @@
         onClick: () => showAlbumSongs(al.id, al.name),
       })));
     } catch (err) {
+      if (seq !== libraryViewSeq) return;
       renderLibraryError("Could not load albums: " + err.message);
     }
   }
 
   async function showAlbumSongs(albumId, albumName) {
     libraryStack.push({ label: albumName, render: () => showAlbumSongs(albumId, albumName) });
-    renderBreadcrumbs();
+    const seq = startLibraryView("none"); // the album's full tracklist, unfiltered
     libraryResultRows = new Map();
     try {
       const data = await Subsonic.getAlbum(albumId);
+      if (seq !== libraryViewSeq) return;
       const songs = (data.album && data.album.song) || [];
       renderLibraryList(songs.map(songRow));
     } catch (err) {
+      if (seq !== libraryViewSeq) return;
       renderLibraryError("Could not load tracks: " + err.message);
     }
   }
@@ -1132,10 +1356,11 @@
   async function showFavorites() {
     selectLibrarySection("favorites");
     libraryStack = [{ label: "Favorites", render: showFavorites }];
-    renderBreadcrumbs();
+    const seq = startLibraryView("songs");
     libraryResultRows = new Map();
     try {
       const data = await Subsonic.getStarred2();
+      if (seq !== libraryViewSeq) return;
       const songs = (data.starred2 && data.starred2.song) || [];
       if (!songs.length) {
         renderLibraryError("No favorites yet. Star a song anywhere in the library to add one.");
@@ -1148,60 +1373,101 @@
       }
       renderLibraryList(filtered.map(songRow));
     } catch (err) {
+      if (seq !== libraryViewSeq) return;
       renderLibraryError("Could not load favorites: " + err.message);
     }
   }
 
-  // Used to be a large random sample of local songs re-sorted by Navidrome's
-  // playCount: an approximation (Subsonic has no "most played" endpoint,
-  // only getTopSongs for one specific artist), and local-only, since a
-  // YouTube track earns no play count anywhere until it's saved into the
-  // library. Now backed by PiTune's own play counter (main.py's
-  // /api/playcount/top, recorded on every natural finish (see recordPlay),
-  // which is an exact top-N ranking, not a sample, and covers YouTube
-  // tracks too. Local rows still show Navidrome's own count in their sub-
-  // line (via songRow, unchanged); PiTune's own count decides the RANKING
-  // here, it doesn't replace what's displayed for a song already in Navidrome.
+  // Merges both play counters, since neither one alone sees every play:
+  //  - Navidrome's own playCount (fed by scrobble, see playIndex and the
+  //    "ended" handler) covers local songs played from ANY Subsonic client
+  //    (Navidrome's web UI, a phone app) and from before PiTune counted
+  //    anything, but knows nothing about a YouTube track until it's saved.
+  //  - PiTune's own counter (main.py's /api/playcount, see recordPlay)
+  //    covers YouTube tracks, plus any local play whose scrobble never
+  //    landed.
+  // A local song played in PiTune is counted by BOTH (recordPlay and the
+  // scrobble fire on the same natural finish), so adding the two would
+  // double-count it; the larger of the two is its count instead.
+  //
+  // Subsonic has no per-song "most played" call (getTopSongs is one
+  // artist's popularity, not play counts), so Navidrome's side comes from
+  // its most played ALBUMS (getAlbumList2 "frequent", where an album's
+  // count is the sum of its songs' plays): their songs' own playCounts,
+  // re-ranked. Best-effort: a heavily played song on an album that isn't
+  // among the MOST_PLAYED_ALBUM_POOL most played albums overall is missed,
+  // which takes an unusually lopsided library to matter. Local songs are
+  // always shown with fresh Navidrome metadata (getSong for any PiTune-
+  // counted song that pool didn't include) rather than a second, drift-
+  // prone copy of title/artist/cover kept in PiTune; one deleted since it
+  // was last played fails getSong and is just left out.
   const MOST_PLAYED_SONG_COUNT = 20;
+  const MOST_PLAYED_ALBUM_POOL = 30;
+
+  async function fetchPituneTopPlays() {
+    // Headroom past MOST_PLAYED_SONG_COUNT for ties at the cutoff once
+    // merged with Navidrome's counts.
+    const res = await fetch(`api/playcount/top?limit=${MOST_PLAYED_SONG_COUNT * 2}`);
+    if (!res.ok) throw new Error(await res.text());
+    return (await res.json()).results;
+  }
+
+  async function fetchNavidromeTopSongs() {
+    const data = await Subsonic.getAlbumList2("frequent", MOST_PLAYED_ALBUM_POOL);
+    const albums = (data.albumList2 && data.albumList2.album) || [];
+    const albumDetails = (await Promise.allSettled(albums.map((al) => Subsonic.getAlbum(al.id))))
+      .filter((r) => r.status === "fulfilled").map((r) => r.value);
+    return albumDetails.flatMap((detail) => (detail.album && detail.album.song) || []).filter((s) => s.playCount > 0);
+  }
 
   async function showMostPlayed() {
     selectLibrarySection("most-played");
     libraryStack = [{ label: "Most Played", render: showMostPlayed }];
-    renderBreadcrumbs();
-    // Local rows here are built via songRow, same as everywhere else in the
-    // Library tab; the YouTube rows use buildYtRow with trackHighlight:
-    // false (see below), so only this one map needs resetting.
+    const seq = startLibraryView("none");
     libraryResultRows = new Map();
     try {
-      const res = await fetch(`api/playcount/top?limit=${MOST_PLAYED_SONG_COUNT}`);
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      if (!data.results.length) {
-        renderLibraryError("Nothing played yet. PiTune counts plays itself now, local library and YouTube both, so this fills in as you listen.");
-        return;
-      }
-      // Local entries only ever store an id + count (see main.py's
-      // PlayMeta); getSong fetches the rest fresh from Navidrome rather
-      // than caching a second copy of title/artist/starred/coverArt here
-      // that could drift out of sync with the library. A song deleted
-      // since it was last played 404s and is just left out, same as any
-      // other section's allSettled-style resilience to a missing item.
-      const rows = await Promise.all(data.results.map(async (r) => {
-        if (r.source === "youtube") {
-          return buildYtRow(
-            { id: r.id, title: r.title, artist: r.artist, thumbnail: r.thumbnail, channelId: null, duration: null, viewCount: null },
-            { showChannelButton: false, trackHighlight: false, extraSub: ` · ${r.count} play${r.count === 1 ? "" : "s"}` },
-          );
-        }
+      // allSettled: either side failing on its own (the backend restarting,
+      // Navidrome mid-scan) still shows the other's plays instead of nothing.
+      const [pitune, navidrome] = await Promise.allSettled([fetchPituneTopPlays(), fetchNavidromeTopSongs()]);
+      if (seq !== libraryViewSeq) return;
+      if (pitune.status === "rejected" && navidrome.status === "rejected") throw pitune.reason;
+      [pitune, navidrome].filter((r) => r.status === "rejected")
+        .forEach((r) => console.warn("Most Played is missing one side's play counts:", r.reason));
+
+      const local = new Map(); // songId -> {song, count}
+      (navidrome.status === "fulfilled" ? navidrome.value : []).forEach((s) => local.set(s.id, { song: s, count: s.playCount }));
+      const youtube = [];
+      (pitune.status === "fulfilled" ? pitune.value : []).forEach((r) => {
+        if (r.source === "youtube") { youtube.push({ youtube: r, count: r.count }); return; }
+        const known = local.get(r.id);
+        if (known) known.count = Math.max(known.count, r.count);
+        else local.set(r.id, { song: null, count: r.count });
+      });
+      await Promise.all([...local].filter(([, e]) => !e.song).map(async ([id, e]) => {
         try {
-          const songData = await Subsonic.getSong(r.id);
-          return songRow(songData.song);
+          e.song = (await Subsonic.getSong(id)).song;
+          e.count = Math.max(e.count, e.song.playCount || 0);
         } catch {
-          return null;
+          local.delete(id);
         }
       }));
-      renderLibraryList(rows.filter(Boolean));
+      if (seq !== libraryViewSeq) return;
+
+      const top = [...local.values(), ...youtube].sort((a, b) => b.count - a.count).slice(0, MOST_PLAYED_SONG_COUNT);
+      if (!top.length) {
+        renderLibraryError("Nothing played yet. Plays from PiTune (library and YouTube alike) and from any other Navidrome client all count, so this fills in as you listen.");
+        return;
+      }
+      renderLibraryList(top.map((e) => (e.youtube
+        ? buildYtRow(
+          { id: e.youtube.id, title: e.youtube.title, artist: e.youtube.artist, thumbnail: e.youtube.thumbnail, channelId: null, duration: null, viewCount: null },
+          { rowMap: libraryResultRows, extraSub: ` · ${e.count} play${e.count === 1 ? "" : "s"}` },
+        )
+        // The merged count, which is what this list is ranked by, rather
+        // than Navidrome's alone.
+        : songRow({ ...e.song, playCount: e.count }))));
     } catch (err) {
+      if (seq !== libraryViewSeq) return;
       renderLibraryError("Could not load most-played: " + err.message);
     }
   }
@@ -1223,7 +1489,7 @@
   async function showRecentlyAdded() {
     selectLibrarySection("recent");
     libraryStack = [{ label: "Recently Added", render: showRecentlyAdded }];
-    renderBreadcrumbs();
+    const seq = startLibraryView("songs");
     libraryResultRows = new Map();
     try {
       const albumData = await Subsonic.getAlbumList2("newest", RECENTLY_ADDED_ALBUM_POOL);
@@ -1232,6 +1498,7 @@
       // must not abort every other album's songs along with it.
       const albumDetails = (await Promise.allSettled(albums.map((al) => Subsonic.getAlbum(al.id))))
         .filter((r) => r.status === "fulfilled").map((r) => r.value);
+      if (seq !== libraryViewSeq) return;
       const songs = applyLibraryFilters(albumDetails.flatMap((detail) => (detail.album && detail.album.song) || []));
       songs.sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0));
       if (!songs.length) {
@@ -1240,6 +1507,7 @@
       }
       renderLibraryList(songs.slice(0, RECENTLY_ADDED_SONG_COUNT).map(songRow));
     } catch (err) {
+      if (seq !== libraryViewSeq) return;
       renderLibraryError("Could not load recently added songs: " + err.message);
     }
   }
@@ -1247,9 +1515,10 @@
   async function showPlaylists() {
     selectLibrarySection("playlists");
     libraryStack = [{ label: "Playlists", render: showPlaylists }];
-    renderBreadcrumbs();
+    const seq = startLibraryView("none");
     try {
       const data = await Subsonic.getPlaylists();
+      if (seq !== libraryViewSeq) return;
       const playlists = (data.playlists && data.playlists.playlist) || [];
       const list = document.getElementById("library-list");
       list.innerHTML = "";
@@ -1276,16 +1545,18 @@
         onClick: () => showPlaylistDetail(p.id, p.name),
       })));
     } catch (err) {
+      if (seq !== libraryViewSeq) return;
       renderLibraryError("Could not load playlists: " + err.message);
     }
   }
 
   async function showPlaylistDetail(playlistId, name) {
     libraryStack.push({ label: name, render: () => showPlaylistDetail(playlistId, name) });
-    renderBreadcrumbs();
+    const seq = startLibraryView("songs");
     libraryResultRows = new Map();
     try {
       const data = await Subsonic.getPlaylist(playlistId);
+      if (seq !== libraryViewSeq) return;
       const songs = (data.playlist && data.playlist.entry) || [];
       if (!songs.length) {
         renderLibraryError("This playlist is empty. Use a song's 📋 button anywhere in the library to add one.");
@@ -1310,6 +1581,7 @@
       controls.appendChild(shuffleBtn);
       renderLibraryList([controls, ...filtered.map(songRow)]);
     } catch (err) {
+      if (seq !== libraryViewSeq) return;
       renderLibraryError("Could not load playlist: " + err.message);
     }
   }
@@ -1341,7 +1613,7 @@
       return;
     }
     libraryStack = [{ label: `Search: ${query}`, render: () => document.getElementById("library-search-form").requestSubmit() }];
-    renderBreadcrumbs();
+    const seq = startLibraryView("songs");
     list.innerHTML = "";
     libraryResultRows = new Map();
     const loading = document.createElement("li");
@@ -1350,6 +1622,7 @@
     list.appendChild(loading);
     try {
       const data = await Subsonic.search3(query);
+      if (seq !== libraryViewSeq) return;
       const songs = (data.searchResult3 && data.searchResult3.song) || [];
       if (!songs.length) {
         renderLibraryError(`No songs matched "${query}".`);
@@ -1362,6 +1635,7 @@
       }
       renderLibraryList(filtered.map(songRow));
     } catch (err) {
+      if (seq !== libraryViewSeq) return;
       renderLibraryError("Search failed: " + err.message);
     }
   });
@@ -1376,15 +1650,19 @@
   //
   // "Load more" grows `limit` and re-fetches+re-renders the WHOLE list from
   // scratch rather than appending just the new tail: neither endpoint
-  // exposes a real cursor (ytsearch/a channel's uploads list don't have one
-  // to expose), and sort=views in particular can legitimately promote a
-  // video that only showed up once more candidates were considered, which a
-  // simple append would never reorder into place.
+  // exposes a real cursor (neither YouTube's search nor a channel's uploads
+  // list offers one through yt-dlp), and sort=views in particular can
+  // legitimately promote a video that only showed up once more candidates
+  // were considered, which a simple append would never reorder into place.
   let ytView = null;
-  // videoId -> <li>, only ever holding the CURRENTLY rendered view's rows;
+  // trackKey -> <li>, only ever holding the CURRENTLY rendered view's rows;
   // replaced wholesale on every renderYtView() so updateNowPlayingHighlights
   // (in the player section above) never touches a stale/removed row.
   let ytResultRows = new Map();
+  // Bumped by every renderYtView(). Without it, whichever request happened
+  // to finish LAST won: a slow search overwrote a quicker one started
+  // after it (a new query, a filter change, opening a channel).
+  let ytRenderSeq = 0;
 
   const YT_SEARCH_BATCH = 20;
   const YT_CHANNEL_BATCH = 30;
@@ -1395,6 +1673,16 @@
       duration: document.getElementById("yt-filter-duration").value,
       uploadDate: document.getElementById("yt-filter-date").value,
     };
+  }
+
+  // One filter bar serves both views, so it has to show the filters of
+  // whichever view is on screen: "← Search results" brings the search back
+  // with ITS OWN filters, and the dropdowns used to keep showing whatever
+  // had last been picked for the channel instead.
+  function syncYtFilterControls(view) {
+    document.getElementById("yt-filter-sort").value = view.sort;
+    document.getElementById("yt-filter-duration").value = view.duration;
+    document.getElementById("yt-filter-date").value = view.uploadDate;
   }
 
   async function fetchYtSearch(view) {
@@ -1419,22 +1707,29 @@
   // Opens a search result's uploader as its own browsable view; `previous`
   // is the search view being left, so the "← Search results" breadcrumb (see
   // renderYtBreadcrumb) can return to it exactly as it was, filters and
-  // "load more" progress included, instead of resetting the search.
+  // "load more" progress included, instead of resetting the search. It
+  // starts with the filter bar's current values, which are what the bar is
+  // showing; it used to start with none at all, which sent the literal
+  // string "undefined" for every filter and got a 422 back from the backend.
   function openChannel(channelId, channelName, previous) {
-    ytView = { kind: "channel", channelId, channelName: channelName || "", limit: YT_CHANNEL_BATCH, previous };
+    ytView = {
+      kind: "channel", channelId, channelName: channelName || "", limit: YT_CHANNEL_BATCH, previous,
+      ...currentYtFilters(),
+    };
     renderYtView();
   }
 
   // options lets callers outside the YouTube tab's own view (Most Played,
   // see showMostPlayed) reuse this without depending on module-level
-  // `ytView`: showChannelButton/extraSub/trackHighlight are all decided by
-  // the caller instead of inferred from whatever view happens to be current.
-  function buildYtRow(r, { showChannelButton = false, extraSub = "", trackHighlight = true } = {}) {
+  // `ytView`: showChannelButton/extraSub/rowMap are all decided by the
+  // caller instead of inferred from whatever view happens to be current.
+  function buildYtRow(r, { showChannelButton = false, extraSub = "", rowMap = ytResultRows } = {}) {
     const track = {
       title: r.title, artist: r.artist, src: `api/stream/${r.id}`, source: "youtube",
       videoId: r.id, thumbUrl: r.thumbnail,
     };
     const views = r.viewCount != null ? ` · ${formatViewCount(r.viewCount)} views` : "";
+    const age = r.uploadedAt ? ` · ${formatAge(r.uploadedAt)}` : "";
     const actions = [
       { icon: "＋", title: "Add to queue", className: "item-queue", onClick: () => addToQueue(track) },
       { icon: "⬇", title: "Save to library", className: "item-save", onClick: (btn) => saveToLibraryManually(r.id, btn) },
@@ -1447,18 +1742,16 @@
     }
     const row = buildRow({
       thumbUrl: r.thumbnail, icon: "▶", title: r.title,
-      sub: (r.artist || "") + views + extraSub,
+      sub: (r.artist || "") + views + age + extraSub,
       durationText: r.duration ? formatTime(r.duration) : "",
       onClick: () => enqueue(track),
       actions,
     });
-    // Only the YouTube tab's own rows participate in live now-playing
-    // highlighting (see updateNowPlayingHighlights): ytResultRows is wiped
-    // wholesale on every renderYtView(), so a row from somewhere else
-    // (Most Played) registering here would just go stale the next time
-    // that tab is used, for no real benefit; Most Played is re-rendered
-    // fresh every visit anyway.
-    if (trackHighlight) ytResultRows.set(r.id, row);
+    // Registered for live now-playing highlighting (see
+    // updateNowPlayingHighlights) in the map of the list it's rendered
+    // into: the YouTube tab's own by default, the Library's for Most Played,
+    // so it's cleared along with that list rather than going stale here.
+    rowMap.set(trackKey(track), row);
     return row;
   }
 
@@ -1483,44 +1776,74 @@
     if (!ytView.previous) back.disabled = true; // opened with nothing to go back to (shouldn't normally happen)
   }
 
-  async function renderYtView() {
+  // loadMore: fetch the next, bigger batch while the current results stay
+  // on screen, instead of the list emptying out to a "Searching…" line
+  // (which also threw the scroll position back to the top, i.e. back
+  // above everything already seen).
+  async function renderYtView({ loadMore = false } = {}) {
+    const seq = ++ytRenderSeq;
+    const view = ytView;
     const list = document.getElementById("yt-results");
     const loadMoreBtn = document.getElementById("yt-load-more");
-    list.innerHTML = "";
-    ytResultRows = new Map();
-    loadMoreBtn.classList.add("hidden");
-    const loading = document.createElement("li");
-    loading.className = "item-sub";
-    loading.textContent = ytView.kind === "channel" ? "Loading channel…" : "Searching…";
-    list.appendChild(loading);
+    // Only committed to view.limit once it has actually loaded, so a failed
+    // "load more" can simply be retried without skipping a batch.
+    const limit = loadMore ? view.limit + (view.kind === "channel" ? YT_CHANNEL_BATCH : YT_SEARCH_BATCH) : view.limit;
+    syncYtFilterControls(view);
     renderYtBreadcrumb();
+    if (loadMore) {
+      loadMoreBtn.disabled = true;
+      loadMoreBtn.textContent = "Loading…";
+    } else {
+      list.innerHTML = "";
+      ytResultRows = new Map();
+      loadMoreBtn.classList.add("hidden");
+      const loading = document.createElement("li");
+      loading.className = "item-sub";
+      loading.textContent = view.kind === "channel" ? "Loading channel…" : "Searching…";
+      list.appendChild(loading);
+    }
 
     try {
-      const data = ytView.kind === "channel" ? await fetchYtChannel(ytView) : await fetchYtSearch(ytView);
-      if (ytView.kind === "channel" && data.channelName) {
-        ytView.channelName = data.channelName;
+      const request = { ...view, limit };
+      const data = view.kind === "channel" ? await fetchYtChannel(request) : await fetchYtSearch(request);
+      if (seq !== ytRenderSeq) return; // a newer search/filter/view has started since; see ytRenderSeq
+      view.limit = limit;
+      if (view.kind === "channel" && data.channelName) {
+        view.channelName = data.channelName;
         renderYtBreadcrumb(); // may have opened with only the search-row's artist name as a guess
       }
+      const scroller = document.querySelector("main");
+      const scrollTop = scroller.scrollTop;
       list.innerHTML = "";
+      ytResultRows = new Map();
       if (!data.results.length) {
         const empty = document.createElement("li");
         empty.className = "item-sub";
-        empty.textContent = ytView.kind === "channel"
+        empty.textContent = view.kind === "channel"
           ? "No uploads match these filters."
           : "No results.";
         list.appendChild(empty);
+        loadMoreBtn.classList.add("hidden");
         return;
       }
-      data.results.forEach((r) => list.appendChild(buildYtRow(r, { showChannelButton: ytView.kind === "search" })));
+      data.results.forEach((r) => list.appendChild(buildYtRow(r, { showChannelButton: view.kind === "search" })));
+      if (loadMore) scroller.scrollTop = scrollTop;
       updateNowPlayingHighlights();
       loadMoreBtn.classList.toggle("hidden", !data.hasMore);
       loadMoreBtn.disabled = false;
       loadMoreBtn.textContent = "Load more";
     } catch (err) {
+      if (seq !== ytRenderSeq) return;
+      if (loadMore) {
+        // Keep the results already showing; the button itself is the retry.
+        loadMoreBtn.disabled = false;
+        loadMoreBtn.textContent = "Load more (failed, tap to retry)";
+        return;
+      }
       list.innerHTML = "";
       const errEl = document.createElement("li");
       errEl.className = "item-sub";
-      errEl.textContent = (ytView.kind === "channel" ? "Could not load channel: " : "Search failed: ") + err.message;
+      errEl.textContent = (view.kind === "channel" ? "Could not load channel: " : "Search failed: ") + err.message;
       list.appendChild(errEl);
     }
   }
@@ -1545,12 +1868,9 @@
     });
   });
 
-  document.getElementById("yt-load-more").addEventListener("click", (e) => {
+  document.getElementById("yt-load-more").addEventListener("click", () => {
     if (!ytView) return;
-    ytView.limit += ytView.kind === "channel" ? YT_CHANNEL_BATCH : YT_SEARCH_BATCH;
-    e.target.disabled = true;
-    e.target.textContent = "Loading…";
-    renderYtView();
+    renderYtView({ loadMore: true });
   });
 
   // ── Discover (not yet implemented) ─────────────────────────────────

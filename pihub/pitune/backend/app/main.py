@@ -25,19 +25,26 @@ progress_hooks, to show a real progress bar and to tell an actual failure
 apart from "still working" instead of guessing from a single request
 timing out.
 
-/api/search's sort/duration/upload_date filters and /api/channel/{id} (a
-channel's own uploads, so "load more" works the same way there) are both
-built on _filter_and_sort/_entry_to_result, shared because both endpoints
-return the same flat, extract_flat "in_playlist" entry shape. Duration
-filtering is exact (flat entries always carry it); upload-date filtering is
-best-effort (see _entry_upload_epoch) since flat extraction doesn't always
-resolve an exact date without one extra request per video, which isn't
-worth paying just to filter. Neither endpoint supports true cursor-based
-pagination (ytsearch/a channel's uploads list don't expose one through
-yt-dlp); "load more" instead re-asks for a larger `limit` and the whole
-result set is re-filtered/re-sorted and re-rendered, not appended to,
-since a sort like "views" can legitimately reorder once more candidates
-are considered.
+/api/search's duration/upload_date filters and its sort-by-views are
+YouTube's OWN search filters (the `sp` parameter its results page uses, see
+_search_sp), so they apply across YouTube's whole index, exactly the way
+the filter menu on youtube.com does. An earlier version filtered a few
+dozen relevance-ranked results after the fact instead, which almost never
+contained anything from "the last hour", could only sort by views within
+that same small batch, and (since flat extraction carries no upload date
+unless asked for, see _FLAT_OPTS) returned nothing at all for ANY
+upload-date filter. Sorting by upload date is the one exception: YouTube's
+search no longer honors that request (yt-dlp removed its ytsearchdate:
+scheme over it, which is also why using it here had started returning 500s),
+so it's a re-sort of the fetched batch by approximate upload time, see
+_sort_entries. /api/channel/{id} (a channel's own uploads) has no
+server-side filters to hand off to, so it still filters an over-fetched
+batch itself (_matches_filters/_sort_entries); both endpoints return the
+same flat, extract_flat "in_playlist" entry shape via _entry_to_result.
+Neither supports true cursor-based pagination (neither list exposes one
+through yt-dlp); "load more" instead re-asks for a larger `limit` and the
+whole result set is re-rendered, not appended to, since a sort like
+"views" can legitimately reorder once more candidates are considered.
 
 /api/playcount/{source}/{id} is PiTune's OWN play counter, separate from
 Navidrome's. It exists because Navidrome only ever knows about local
@@ -55,6 +62,7 @@ Navidrome's own counts do.
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -62,6 +70,7 @@ import re
 import secrets
 import threading
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -229,6 +238,23 @@ _BASE_OPTS = {"quiet": True, "no_warnings": True, "noplaylist": True}
 if YTDLP_COOKIES_FILE:
     _BASE_OPTS["cookiefile"] = YTDLP_COOKIES_FILE
 
+# Flat ("in_playlist") listing, shared by search and channel uploads.
+# approximate_date matters: without it yt-dlp leaves timestamp/upload_date
+# unset on EVERY flat entry (an exact date would cost one extra request per
+# video), so there was nothing to filter or sort by date on at all. With it,
+# yt-dlp turns YouTube's own "3 weeks ago" label into an approximate
+# timestamp at no extra cost. Approximate is all a "this week"/"this month"
+# style filter needs anyway.
+_FLAT_OPTS = {
+    **_BASE_OPTS, "extract_flat": "in_playlist", "skip_download": True,
+    "extractor_args": {"youtubetab": {"approximate_date": [""]}},
+}
+
+# Upper bounds on `limit`, so "load more" has a defined end: hasMore turns
+# false once a bigger limit could no longer return anything new.
+_SEARCH_MAX_RESULTS = 150
+_CHANNEL_MAX_ENTRIES = 200
+
 
 def _validate_video_id(video_id: str) -> str:
     if not _VIDEO_ID_RE.match(video_id):
@@ -258,6 +284,46 @@ def _channel_url(channel_id: str) -> str:
     return f"https://www.youtube.com/channel/{channel_id}/videos"
 
 
+# YouTube's own search filters, as its results page encodes them in the
+# `sp` URL parameter: a base64 protobuf message, {1: sort order,
+# 2: {1: upload date, 2: result type, 3: duration}}. Verified live against
+# YouTube: every bucket below comes back exactly as labelled. Relevance is
+# the default sort (field omitted); a sort-by-upload-date value (2) still
+# parses but YouTube ignores it now, see _sort_entries.
+_SP_SORT = {"views": 3}
+_SP_UPLOAD_DATE = {"hour": 1, "today": 2, "week": 3, "month": 4, "year": 5}
+_SP_DURATION = {"short": 1, "long": 2, "medium": 3}  # <4 min, >20 min, 4-20 min
+_SP_TYPE_VIDEO = 1  # never channels/playlists, which /api/stream can't play
+
+
+def _pb_varint(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte, n = n & 0x7F, n >> 7
+        out.append(byte | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
+
+def _search_sp(sort: str, duration: str, upload_date: str) -> str:
+    filters = b""
+    if upload_date in _SP_UPLOAD_DATE:
+        filters += _pb_varint(1 << 3) + _pb_varint(_SP_UPLOAD_DATE[upload_date])
+    filters += _pb_varint(2 << 3) + _pb_varint(_SP_TYPE_VIDEO)
+    if duration in _SP_DURATION:
+        filters += _pb_varint(3 << 3) + _pb_varint(_SP_DURATION[duration])
+    msg = (_pb_varint(1 << 3) + _pb_varint(_SP_SORT[sort])) if sort in _SP_SORT else b""
+    msg += _pb_varint(2 << 3 | 2) + _pb_varint(len(filters)) + filters  # field 2, length-delimited
+    return base64.b64encode(msg).decode()
+
+
+def _search_url(query: str, sp: str) -> str:
+    # A results-page URL (handled by yt-dlp's YoutubeSearchURL extractor,
+    # which passes sp through as-is), not the ytsearchN: pseudo-URL, which
+    # has no way to carry filters at all.
+    return "https://www.youtube.com/results?" + urllib.parse.urlencode({"search_query": query, "sp": sp})
+
+
 def _entry_to_result(entry: dict) -> dict:
     thumbnails = entry.get("thumbnails") or []
     return {
@@ -277,6 +343,10 @@ def _entry_to_result(entry: dict) -> dict:
         # YouTube's own search response happens not to include it, which
         # the frontend just omits rather than showing "None views".
         "viewCount": entry.get("view_count"),
+        # Approximate (see _FLAT_OPTS), epoch seconds, or None; shown as
+        # "3 weeks ago" the way YouTube's own results do, so a date sort
+        # or filter is visibly doing what it says.
+        "uploadedAt": _entry_upload_epoch(entry),
     }
 
 
@@ -297,14 +367,15 @@ _UPLOAD_DATE_WINDOW_SECONDS = {
 
 
 def _entry_upload_epoch(entry: dict) -> float | None:
-    """Best-effort only: flat ("in_playlist") entries don't always carry an
-    exact upload date, since that normally needs a full per-video extraction, one
-    extra request each, which isn't worth paying just to filter a search.
-    yt-dlp resolves YouTube's own relative "3 weeks ago" label into
-    timestamp/release_timestamp when it can; upload_date (a plain YYYYMMDD
-    string) is the fallback when only that's present. An entry with neither
-    is excluded from an upload_date-filtered result rather than guessed at,
-    see _filter_and_sort."""
+    """Best-effort only: flat ("in_playlist") entries never carry an exact
+    upload date, since that needs a full per-video extraction, one extra
+    request each, which isn't worth paying just to filter or sort a list.
+    With approximate_date on (see _FLAT_OPTS), yt-dlp resolves YouTube's
+    own relative "3 weeks ago" label into timestamp; upload_date (a plain
+    YYYYMMDD string) is the fallback when only that's present. Live streams
+    and premieres have neither. An entry with no date is excluded from an
+    upload_date-filtered channel listing rather than guessed at (see
+    _matches_filters), and sorts last in a date sort."""
     ts = entry.get("timestamp") or entry.get("release_timestamp")
     if ts:
         try:
@@ -320,101 +391,108 @@ def _entry_upload_epoch(entry: dict) -> float | None:
     return None
 
 
-def _filter_and_sort(entries: list[dict], *, sort: str, duration: str, upload_date: str) -> list[dict]:
-    """Applies to raw yt-dlp entries (not yet trimmed to the frontend's
-    result shape), so duration/upload_date/view_count are all still present
-    under yt-dlp's own field names. Order-preserving except for sort="views"
-    (an explicit re-sort): "relevance" and "date" both keep whatever order
-    yt-dlp/YouTube already returned the entries in (for "date", that's
-    already newest-first, from the ytsearchdate: scheme used to fetch them;
-    see _search_youtube)."""
+def _is_playable(entry: dict) -> bool:
+    """A live broadcast never finishes downloading: /api/stream would keep
+    writing a 24/7 stream into the container-local cache for as long as it
+    runs, with the request itself never completing. An upcoming premiere
+    has nothing to play yet. Neither belongs in a list where every row is
+    supposed to be playable, and live streams top a lot of music searches
+    ("lofi hip hop radio" returns three of them first)."""
+    return entry.get("live_status") not in ("is_live", "is_upcoming")
+
+
+def _matches_filters(entry: dict, duration: str, upload_date: str, now: float) -> bool:
+    """Client-side version of YouTube's own duration/upload-date filters,
+    for channel uploads, where there's no server-side filter to hand them
+    to (search uses YouTube's own instead, see _search_sp). Duration is
+    exact (flat entries always carry it); upload date is approximate (see
+    _entry_upload_epoch)."""
     dur_bounds = _DURATION_BUCKETS[duration]
+    if dur_bounds is not None:
+        d = entry.get("duration")
+        if d is None:
+            return False
+        lo, hi = dur_bounds
+        if d < lo or (hi is not None and d >= hi):
+            return False
     window = _UPLOAD_DATE_WINDOW_SECONDS[upload_date]
-    now = time.time()
+    if window is not None:
+        epoch = _entry_upload_epoch(entry)
+        if epoch is None or (now - epoch) > window:
+            return False
+    return True
 
-    def keep(entry: dict) -> bool:
-        if dur_bounds is not None:
-            d = entry.get("duration")
-            if d is None:
-                return False
-            lo, hi = dur_bounds
-            if d < lo or (hi is not None and d >= hi):
-                return False
-        if window is not None:
-            epoch = _entry_upload_epoch(entry)
-            if epoch is None or (now - epoch) > window:
-                return False
-        return True
 
-    filtered = [e for e in entries if keep(e)]
+def _sort_entries(entries: list[dict], sort: str) -> list[dict]:
+    """Sorting by relevance keeps YouTube's own order. "views" is already
+    YouTube's own ranking for search (see _search_sp; re-sorting just
+    straightens its occasional near-tie out of order) and the only way to
+    get it at all for channel uploads. "date" is always a re-sort here: YouTube's search no
+    longer honors a sort-by-upload-date request, and a channel's uploads tab
+    is newest-first already, so this is newest-first within the fetched batch
+    by approximate upload time. Stable, so ties keep YouTube's own order;
+    undated entries sort last."""
     if sort == "views":
-        filtered.sort(key=lambda e: e.get("view_count") or 0, reverse=True)
-    return filtered
+        return sorted(entries, key=lambda e: e.get("view_count") or 0, reverse=True)
+    if sort == "date":
+        return sorted(entries, key=lambda e: _entry_upload_epoch(e) or 0, reverse=True)
+    return entries
 
 
 def _search_youtube(query: str, limit: int, sort: str, duration: str, upload_date: str) -> dict:
     """Blocking (network I/O); always call via asyncio.to_thread.
 
-    A duration/upload_date filter can only ever narrow what yt-dlp returns,
-    never add to it, so asking for exactly `limit` raw results and then
-    filtering could easily leave far fewer than the caller wanted. There's no
-    way to ask YouTube's search for "N results after filtering" directly, so
-    this over-fetches a bounded multiple instead when a filter is active;
-    still an approximation; an unusual filter on a niche query can still come
-    back short. The no-filter path (the common case) is untouched: it fetches
-    exactly `limit`, same as before this existed."""
-    filters_active = duration != "any" or upload_date != "any"
-    fetch_count = min(limit * 4, 200) if filters_active else limit
-    # yt-dlp's own sort-by-upload-date search variant; "relevance" and
-    # "views" both use the plain scheme (views is a re-sort of the fetched
-    # batch in _filter_and_sort, not a different fetch).
-    scheme = "ytsearchdate" if sort == "date" else "ytsearch"
-
-    # Asks for one more than fetch_count actually needs, purely to answer
-    # "is there more" without ambiguity: getting back exactly fetch_count
-    # entries is consistent with either "that's every result there is" or
-    # "there's more, we just didn't ask for it", and there's no way to tell
-    # those apart after the fact. The extra entry (never returned to the
-    # caller) resolves that outright instead of guessing.
-    opts = {**_BASE_OPTS, "extract_flat": "in_playlist", "skip_download": True}
+    duration/upload_date (and sort=views) are applied by YouTube itself via
+    sp, so exactly `limit` results are all this needs to ask for. It asks
+    for one more than that purely to answer "is there more" without
+    ambiguity: getting back exactly `limit` entries is consistent with both
+    "that's every result there is" and "there's more, we just didn't ask
+    for it". The extra entry (never returned to the caller) settles which."""
+    opts = {**_FLAT_OPTS, "playlistend": limit + 1}
+    url = _search_url(query, _search_sp(sort, duration, upload_date))
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(f"{scheme}{fetch_count + 1}:{query}", download=False)
+        info = ydl.extract_info(url, download=False, ie_key="YoutubeSearchURL")
     raw_entries = [e for e in (info.get("entries") or []) if e]
-    has_more = len(raw_entries) > fetch_count
-    raw_entries = raw_entries[:fetch_count]
 
-    filtered = _filter_and_sort(raw_entries, sort=sort, duration=duration, upload_date=upload_date)
+    entries = _sort_entries([e for e in raw_entries[:limit] if _is_playable(e)], sort)
     return {
-        "results": [_entry_to_result(e) for e in filtered[:limit]],
-        "hasMore": has_more,
+        "results": [_entry_to_result(e) for e in entries],
+        # A larger limit past the cap would be clamped back down to this
+        # same request, so "load more" would never show anything new.
+        "hasMore": len(raw_entries) > limit and limit < _SEARCH_MAX_RESULTS,
     }
 
 
 def _channel_videos(channel_id: str, limit: int, sort: str, duration: str, upload_date: str) -> dict:
     """Blocking (network I/O); always call via asyncio.to_thread.
-    channel_id is already validated by the caller. Same over-fetch/filter
-    approach as _search_youtube; "date" doesn't get its own fetch scheme here
-    since a channel's uploads tab is already newest-first from YouTube
-    itself, so plain relevance-order fetching already gives that for free."""
-    filters_active = duration != "any" or upload_date != "any"
-    fetch_count = min(limit * 4, 200) if filters_active else limit
+    channel_id is already validated by the caller.
 
-    # See _search_youtube's own comment on the same "+1" trick for hasMore.
-    opts = {
-        **_BASE_OPTS, "extract_flat": "in_playlist", "skip_download": True,
-        "playliststart": 1, "playlistend": fetch_count + 1,
-    }
+    A duration/upload_date filter can only narrow what gets fetched, so
+    asking for exactly `limit` uploads and filtering after would usually
+    leave far fewer than wanted; this over-fetches a bounded multiple
+    instead while a filter is active. Same "+1" trick as _search_youtube
+    for hasMore."""
+    filters_active = duration != "any" or upload_date != "any"
+    fetch_count = min(limit * 4, _CHANNEL_MAX_ENTRIES) if filters_active else limit
+
+    opts = {**_FLAT_OPTS, "playliststart": 1, "playlistend": fetch_count + 1}
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(_channel_url(channel_id), download=False)
     raw_entries = [e for e in (info.get("entries") or []) if e]
-    has_more = len(raw_entries) > fetch_count
-    raw_entries = raw_entries[:fetch_count]
 
-    filtered = _filter_and_sort(raw_entries, sort=sort, duration=duration, upload_date=upload_date)
+    now = time.time()
+    matching = _sort_entries(
+        [e for e in raw_entries[:fetch_count] if _is_playable(e) and _matches_filters(e, duration, upload_date, now)],
+        sort,
+    )
     return {
         "channelName": info.get("channel") or info.get("uploader") or info.get("title") or "",
-        "results": [_entry_to_result(e) for e in filtered[:limit]],
-        "hasMore": has_more,
+        "results": [_entry_to_result(e) for e in matching[:limit]],
+        # More to show if this fetch already found more matches than fit in
+        # `limit`, or if a bigger limit would reach further into the channel
+        # than this fetch did (it can't once fetch_count hits the cap).
+        "hasMore": len(matching) > limit
+        or (len(raw_entries) > fetch_count and fetch_count < _CHANNEL_MAX_ENTRIES),
     }
 
 
@@ -466,11 +544,14 @@ async def search(
     duration: Literal["any", "short", "medium", "long"] = "any",
     upload_date: Literal["any", "hour", "today", "week", "month", "year"] = "any",
 ):
+    # YoutubeDLError, not just its DownloadError subclass: yt-dlp raises
+    # other subclasses too (e.g. a networking error for a URL it no longer
+    # supports), and those used to surface as a bare, unexplained 500.
     try:
         data = await asyncio.to_thread(
-            _search_youtube, q, max(1, min(limit, 150)), sort, duration, upload_date
+            _search_youtube, q, max(1, min(limit, _SEARCH_MAX_RESULTS)), sort, duration, upload_date
         )
-    except yt_dlp.utils.DownloadError as exc:
+    except yt_dlp.utils.YoutubeDLError as exc:
         raise HTTPException(status_code=502, detail=f"YouTube search failed: {exc}")
     return data
 
@@ -486,9 +567,9 @@ async def channel_videos(
     channel_id = _validate_channel_id(channel_id)
     try:
         data = await asyncio.to_thread(
-            _channel_videos, channel_id, max(1, min(limit, 200)), sort, duration, upload_date
+            _channel_videos, channel_id, max(1, min(limit, _CHANNEL_MAX_ENTRIES)), sort, duration, upload_date
         )
-    except yt_dlp.utils.DownloadError as exc:
+    except yt_dlp.utils.YoutubeDLError as exc:
         raise HTTPException(status_code=502, detail=f"Could not load channel: {exc}")
     return data
 
