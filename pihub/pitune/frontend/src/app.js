@@ -248,7 +248,7 @@
 
   // ── Player / queue ──────────────────────────────────────────────────
   const audio = document.getElementById("audio");
-  let queue = []; // {title, artist, src, source: 'local'|'youtube'}
+  let queue = []; // {title, artist, src, source: 'local'|'youtube', origin: 'library'|'youtube', ...}
   let queueIndex = -1;
 
   function renderQueue() {
@@ -368,6 +368,7 @@
     [ytResultRows, libraryResultRows].forEach((rows) => {
       rows.forEach((row, key) => row.classList.toggle("playing", key === playingKey));
     });
+    syncLocateUi(); // see "Locate the playing song" below
   }
 
   function renderNowPlaying() {
@@ -647,14 +648,162 @@
   syncVolumeUi();
 
   // ── Tabs ────────────────────────────────────────────────────────────
+  function activeTab() {
+    const btn = document.querySelector(".tab-btn.active");
+    return btn ? btn.dataset.tab : null;
+  }
+
+  // A function rather than only a click handler, since goToNowPlaying
+  // (below) switches tabs too.
+  function switchTab(name) {
+    document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+    document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === `tab-${name}`));
+    syncPlayingMarker(); // the marker only ever tracks the visible tab's list
+  }
+
   document.querySelectorAll(".tab-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
-      document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
-      btn.classList.add("active");
-      document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
-    });
+    btn.addEventListener("click", () => switchTab(btn.dataset.tab));
   });
+
+  // ── Locate the playing song ─────────────────────────────────────────
+  // The "playing" highlight (updateNowPlayingHighlights) only helps once
+  // that row is on screen: after a few "Load more"s, a long scroll, or from
+  // another tab, there was no way to find it again. Three ways to get there,
+  // all ending in revealRow(): the YouTube tab's "⌖ Now playing" button,
+  // clicking the player bar's thumbnail/title (goToNowPlaying, which also
+  // switches tabs), and the "▶ Playing ↓" marker that appears just above the
+  // player bar while the playing row is scrolled out of view.
+  const ytLocateBtn = document.getElementById("yt-locate");
+  const nowPlayingEl = document.querySelector(".now-playing");
+  const playingMarker = document.getElementById("np-marker");
+
+  // The playing song's row in one tab's list, or null if that list isn't
+  // showing it right now. The Queue always is while anything plays
+  // (renderQueue marks it), which makes it goToNowPlaying's last resort.
+  function nowPlayingRow(tab) {
+    const track = queue[queueIndex];
+    if (!track) return null;
+    let row = null;
+    if (tab === "queue") row = document.querySelector("#queue-list .item-row.playing");
+    else if (tab === "youtube") row = ytResultRows.get(trackKey(track));
+    else if (tab === "library") row = libraryResultRows.get(trackKey(track));
+    // The maps can briefly still hold rows a re-render has already removed
+    // (e.g. between a new search's "Searching…" line and its results).
+    return row && row.isConnected ? row : null;
+  }
+
+  function revealRow(row) {
+    const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    row.scrollIntoView({ block: "center", behavior: reduceMotion ? "auto" : "smooth" });
+    // Re-adding a class that's already there doesn't replay its animation,
+    // so revealing the same row twice would only flash it once; dropping
+    // it and forcing a reflow first restarts it.
+    row.classList.remove("flash");
+    void row.offsetWidth;
+    row.classList.add("flash");
+    row.addEventListener("animationend", () => row.classList.remove("flash"), { once: true });
+  }
+
+  // The tab the song was started from first (track.origin, see songToTrack
+  // and buildYtRow), as long as that list still shows it; then whichever
+  // other list does (e.g. a new search replaced the results it was started
+  // from); then the Queue, which always does.
+  function goToNowPlaying() {
+    const track = queue[queueIndex];
+    if (!track) return;
+    const tabs = [...new Set([track.origin, "youtube", "library", "queue"])].filter(Boolean);
+    for (const tab of tabs) {
+      const row = nowPlayingRow(tab);
+      if (row) {
+        switchTab(tab);
+        revealRow(row);
+        return;
+      }
+    }
+  }
+
+  // "▶ Playing ↓/↑" while the playing row in the visible tab is out of view,
+  // pointing the way to it. Observed against <main>, the one scroll
+  // container every tab shares, with the player bar's height taken off its
+  // bottom edge: the bar is position: fixed over main, so a row behind it
+  // is out of view too. Where IntersectionObserver doesn't exist, the marker
+  // simply never shows; the other two ways still work.
+  let markerObserver = null;
+  let markerRow = null;
+
+  // force: re-observe even if the row is unchanged (the player bar resized,
+  // so the margin baked into the current observer is stale).
+  function syncPlayingMarker({ force = false } = {}) {
+    const row = nowPlayingRow(activeTab());
+    if (row === markerRow && !force) return;
+    if (markerObserver) markerObserver.disconnect();
+    markerObserver = null;
+    markerRow = row;
+    playingMarker.classList.add("hidden");
+    if (!row || typeof IntersectionObserver === "undefined") return;
+    const playerBarHeight = document.querySelector(".player-bar").offsetHeight;
+    markerObserver = new IntersectionObserver(([entry]) => {
+      const rootTop = entry.rootBounds ? entry.rootBounds.top : 0;
+      playingMarker.textContent = entry.boundingClientRect.top < rootTop ? "▶ Playing ↑" : "▶ Playing ↓";
+      playingMarker.classList.toggle("hidden", entry.isIntersecting);
+    }, { root: document.querySelector("main"), rootMargin: `0px 0px -${playerBarHeight}px 0px` });
+    markerObserver.observe(row);
+  }
+
+  // Whenever the playing song, or any list that might show it, changes.
+  function syncLocateUi() {
+    const playing = !!queue[queueIndex];
+    const inResults = !!nowPlayingRow("youtube");
+    ytLocateBtn.classList.toggle("hidden", !playing);
+    ytLocateBtn.disabled = !inResults;
+    // Spelled out in the label, not just a tooltip: there's no hover on a
+    // phone to discover why the button is greyed out.
+    ytLocateBtn.textContent = inResults ? "⌖ Now playing" : "⌖ Not in these results";
+    nowPlayingEl.classList.toggle("locatable", playing);
+    nowPlayingEl.tabIndex = playing ? 0 : -1;
+    nowPlayingEl.setAttribute("aria-disabled", String(!playing));
+    syncPlayingMarker();
+  }
+
+  ytLocateBtn.addEventListener("click", () => {
+    const row = nowPlayingRow("youtube");
+    if (row) revealRow(row);
+  });
+  nowPlayingEl.addEventListener("click", goToNowPlaying);
+  nowPlayingEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      goToNowPlaying();
+    }
+  });
+  playingMarker.addEventListener("click", () => {
+    if (markerRow) revealRow(markerRow);
+  });
+
+  // The lists get cleared and rebuilt from a lot of places (every library
+  // section, search, load more, filter changes, queue edits), not all of
+  // which end in updateNowPlayingHighlights. Watching the lists themselves
+  // keeps the button and marker from pointing at a row that's gone, without
+  // every one of those code paths having to remember to say so.
+  const listObserver = new MutationObserver(() => syncLocateUi());
+  ["queue-list", "yt-results", "library-list"].forEach((id) => {
+    listObserver.observe(document.getElementById(id), { childList: true });
+  });
+
+  // The player bar's real height, for main's bottom padding (see
+  // style.css's main rule: a fixed guess left the end of every list
+  // stuck under the bar on a phone, where a tap meant for "Load more"
+  // landed on the bar instead) and for the marker's observer margin above,
+  // which is re-armed here so it follows the bar through a rotation or
+  // resize. Reports 0 while the bar is hidden behind the login gate, which
+  // is fine: nothing scrolls then.
+  if (typeof ResizeObserver !== "undefined") {
+    const playerBar = document.querySelector(".player-bar");
+    new ResizeObserver(() => {
+      document.documentElement.style.setProperty("--player-bar-height", `${playerBar.offsetHeight}px`);
+      syncPlayingMarker({ force: true });
+    }).observe(playerBar);
+  }
 
   // ── Library (Navidrome) ────────────────────────────────────────────
   let libraryStack = [];
@@ -950,6 +1099,7 @@
       // Every Child (song) element carries its own coverArt id, usable
       // directly with getCoverArt; no separate album lookup needed.
       thumbUrl: s.coverArt ? Subsonic.coverArtUrl(s.coverArt) : null,
+      origin: "library", // the tab goToNowPlaying returns to
     };
   }
 
@@ -1461,7 +1611,7 @@
       renderLibraryList(top.map((e) => (e.youtube
         ? buildYtRow(
           { id: e.youtube.id, title: e.youtube.title, artist: e.youtube.artist, thumbnail: e.youtube.thumbnail, channelId: null, duration: null, viewCount: null },
-          { rowMap: libraryResultRows, extraSub: ` · ${e.count} play${e.count === 1 ? "" : "s"}` },
+          { origin: "library", extraSub: ` · ${e.count} play${e.count === 1 ? "" : "s"}` },
         )
         // The merged count, which is what this list is ranked by, rather
         // than Navidrome's alone.
@@ -1721,12 +1871,15 @@
 
   // options lets callers outside the YouTube tab's own view (Most Played,
   // see showMostPlayed) reuse this without depending on module-level
-  // `ytView`: showChannelButton/extraSub/rowMap are all decided by the
+  // `ytView`: showChannelButton/extraSub/origin are all decided by the
   // caller instead of inferred from whatever view happens to be current.
-  function buildYtRow(r, { showChannelButton = false, extraSub = "", rowMap = ytResultRows } = {}) {
+  // origin: the tab this row is rendered into ("youtube" or "library"),
+  // which decides both which list's highlight map it joins and which tab
+  // goToNowPlaying returns to while it plays.
+  function buildYtRow(r, { showChannelButton = false, extraSub = "", origin = "youtube" } = {}) {
     const track = {
       title: r.title, artist: r.artist, src: `api/stream/${r.id}`, source: "youtube",
-      videoId: r.id, thumbUrl: r.thumbnail,
+      videoId: r.id, thumbUrl: r.thumbnail, origin,
     };
     const views = r.viewCount != null ? ` · ${formatViewCount(r.viewCount)} views` : "";
     const age = r.uploadedAt ? ` · ${formatAge(r.uploadedAt)}` : "";
@@ -1751,7 +1904,7 @@
     // updateNowPlayingHighlights) in the map of the list it's rendered
     // into: the YouTube tab's own by default, the Library's for Most Played,
     // so it's cleared along with that list rather than going stale here.
-    rowMap.set(trackKey(track), row);
+    (origin === "library" ? libraryResultRows : ytResultRows).set(trackKey(track), row);
     return row;
   }
 

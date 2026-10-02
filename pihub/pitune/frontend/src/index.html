@@ -135,6 +135,9 @@
             <option value="year">This year</option>
           </select>
         </label>
+        <!-- Scrolls to the playing song in these results; shown only while
+             something plays. See app.js's "Locate the playing song". -->
+        <button id="yt-locate" class="yt-locate hidden" type="button">⌖ Now playing</button>
       </div>
       <!-- Shown only while browsing a channel's uploads (opened from a
            search result's 📺 button); see app.js's renderYtBreadcrumb(). -->
@@ -174,7 +177,13 @@
   </main>
 
   <footer class="player-bar hidden">
-    <div class="now-playing">
+    <!-- Shown above the bar while the playing row is scrolled out of view;
+         see app.js's syncPlayingMarker. -->
+    <button id="np-marker" class="np-marker hidden" type="button">▶ Playing ↓</button>
+
+    <!-- Clickable while something plays: jumps to the playing song in the
+         list it was started from (app.js's goToNowPlaying). -->
+    <div class="now-playing" role="button" tabindex="-1" aria-disabled="true" title="Show the playing song in its list">
       <img id="np-thumb" class="np-thumb hidden" alt="">
       <div class="now-playing-text">
         <div class="track-title" id="np-title">Nothing playing</div>
