@@ -93,8 +93,11 @@ DOWNLOAD_ENABLED = os.environ.get("DOWNLOAD_ENABLED", "true").strip().lower() ==
 # A "YouTube" subfolder INSIDE the actual scanned music library (see
 # pihub/docker-compose.yml: this container is only ever given write access
 # to that one subfolder, never the rest of /music), not a separate
-# disposable folder. Navidrome picks up new files here on its own regular
-# scan (ND_SCANSCHEDULE), no manual "add a second library" step needed. If
+# disposable folder. Navidrome picks up new files here on its own, no
+# manual "add a second library" step needed: its file watcher (on by
+# default since Navidrome 0.55) has a saved track in the library about 5 s
+# after the MP3 lands, with the hourly scheduled scan (see
+# docker-compose.yml's ND_SCANNER_SCHEDULE) as the fallback. If
 # MEDIA_LIBRARY_ROOT points this at a folder inside home-drive's Nextcloud,
 # Nextcloud's own index does NOT learn about these files automatically;
 # run `occ files:scan --all` afterward (or on a schedule). See
@@ -609,29 +612,51 @@ async def _download_to_library(video_id: str) -> None:
             with _SAVE_PROGRESS_LOCK:
                 _SAVE_PROGRESS[video_id] = {"status": "processing", "percent": None, "error": None}
 
-    def _download() -> str:
+    def _download() -> tuple[str, Path | None]:
         opts = {
             **_BASE_OPTS,
             "format": "bestaudio/best",
             "outtmpl": str(MUSIC_SAVE_PATH / "%(uploader)s - %(title)s.%(ext)s"),
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }],
+            "postprocessors": [
+                {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"},
+                # Without this the MP3 carries no tags at all (checked with
+                # ffprobe: only ffmpeg's own "encoder"), so Navidrome filed
+                # every saved track under "[Unknown Artist]" / "[Unknown
+                # Album]", titled after its file name, out of reach of the
+                # Library's artist and year filters. With it: title, artist
+                # (YouTube Music's credited artist where there is one, else
+                # the channel), year, and the video's URL as the comment.
+                {"key": "FFmpegMetadata", "add_metadata": True, "add_chapters": False},
+            ],
             "progress_hooks": [hook],
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(_video_url(video_id), download=True)
-        return info.get("title", video_id)
+        # The file as it stands after every postprocessor (the .mp3, not the
+        # .webm/.m4a it was converted from and that yt-dlp has since deleted).
+        final = (info.get("requested_downloads") or [{}])[-1].get("filepath")
+        return info.get("title", video_id), Path(final) if final else None
 
     try:
-        title = await asyncio.to_thread(_download)
-        with _SAVE_PROGRESS_LOCK:
-            _SAVE_PROGRESS[video_id] = {"status": "done", "percent": 100.0, "title": title, "error": None}
+        title, path = await asyncio.to_thread(_download)
+        # yt-dlp returning normally isn't proof on its own that a usable file
+        # landed in the library (a postprocessor can come up empty-handed
+        # without raising), and "done" is what the frontend shows as "saved".
+        if path is None or not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError(f"yt-dlp reported success, but no saved file was found ({path})")
+        state = {"status": "done", "percent": 100.0, "title": title, "file": path.name, "error": None}
     except yt_dlp.utils.DownloadError as exc:
-        with _SAVE_PROGRESS_LOCK:
-            _SAVE_PROGRESS[video_id] = {"status": "error", "percent": None, "error": str(exc)}
+        state = {"status": "error", "percent": None, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        # Anything else (a full disk, a permissions problem on the mount, an
+        # ffmpeg crash yt-dlp didn't wrap) used to kill this background task
+        # silently, leaving the status at "downloading" forever, and the
+        # frontend, which polls until it sees "done" or "error", polling
+        # with it.
+        logger.exception("Saving %s to the library failed", video_id)
+        state = {"status": "error", "percent": None, "error": f"{type(exc).__name__}: {exc}"}
+    with _SAVE_PROGRESS_LOCK:
+        _SAVE_PROGRESS[video_id] = state
 
 
 @app.post("/api/save/{video_id}", dependencies=[Depends(require_token)])

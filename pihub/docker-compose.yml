@@ -243,6 +243,16 @@ services:
       ND_MUSICFOLDER: /music
       ND_DATAFOLDER: /data
       ND_LOGLEVEL: ${ND_LOGLEVEL:-info}
+      # Navidrome 0.55+ reads the scan schedule from ND_SCANNER_SCHEDULE and
+      # silently ignores the old ND_SCANSCHEDULE name (checked against
+      # 0.64: "Periodic scan is DISABLED" with only the old one set), so
+      # the hourly scan this stack documents wasn't happening at all. Both
+      # are set, from the same .env value, so a NAVIDROME_TAG pinned to an
+      # older release still gets it too. New files normally show up well
+      # before this anyway, via Navidrome's own file watcher (on by default
+      # since 0.55, ~5 s after a file lands); this scan is the fallback for
+      # whatever a watcher can miss.
+      ND_SCANNER_SCHEDULE: ${ND_SCANSCHEDULE:-@every 1h}
       ND_SCANSCHEDULE: ${ND_SCANSCHEDULE:-@every 1h}
       TZ: ${TZ}
 

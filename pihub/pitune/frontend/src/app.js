@@ -543,7 +543,9 @@
           setLabel("…", "Converting to MP3…");
         } else if (state.status === "done") {
           progress.remove();
-          setLabel("✓", "Saved to library");
+          // `file` is only reported once the backend has checked the MP3
+          // really is on disk (see main.py's _download_to_library).
+          setLabel("✓", state.file ? `Saved to library: music/YouTube/${state.file}` : "Saved to library");
           autoSavedVideoIds.add(videoId); // skip a redundant auto-save if played to completion later
           return;
         } else if (state.status === "error") {

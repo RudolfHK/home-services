@@ -357,8 +357,10 @@ the moment a file actually lands, instead of guessing at how often you'll
 need it; see home-drive's README.md.
 
 New files added through Nextcloud show up in PiTune/Jellyfin once their
-own scans pick them up: Navidrome within `ND_SCANSCHEDULE` (every hour by
-default) or a manual rescan from its admin UI; Jellyfin on its own library
+own scans pick them up: Navidrome within seconds, through its own file
+watcher (on by default since Navidrome 0.55), with the `ND_SCANSCHEDULE`
+scan (every hour by default) as the fallback, or a manual rescan from its
+admin UI; Jellyfin on its own library
 scan schedule (**Dashboard → Libraries → Scan All Libraries** to force
 one). Nothing Nextcloud-side needs to know either is reading from here,
 since both only ever read.
